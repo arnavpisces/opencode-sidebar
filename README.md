@@ -33,7 +33,7 @@ bun install
 - `↑` / `↓`: move
 - `Enter`: load or recall selected session into preview
 - `n`: new session
-- `d`: delete session
+- `d`: delete session (with confirmation)
 - `/`: search
 - `a`: pin directory
 - `x`: unpin directory

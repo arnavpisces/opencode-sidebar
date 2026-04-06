@@ -6,8 +6,19 @@ import type { DirectoryRecord, SidebarRow, Snapshot } from "./lib/types.js"
 import { isPrintable, relativeTime, truncate } from "./lib/util.js"
 
 type Mode = "browse" | "search" | "pin"
+type DeleteTarget = {
+  sessionID: string
+  directory: string
+  title: string
+}
+
+type BorderColor = React.ComponentProps<typeof Box>["borderColor"]
+type TextColor = React.ComponentProps<typeof Text>["color"]
 
 const service = new LauncherService()
+const SPINNER_FRAMES = ["-", "\\", "|", "/"]
+const LIVE_FRAMES = ["o", "O", "0", "O"]
+const SELECT_FRAMES = [">", "}", "]", "}"]
 
 function rowKey(row: SidebarRow) {
   return row.key
@@ -34,7 +45,9 @@ function buildRows(snapshot: Snapshot | null, expanded: Record<string, boolean>,
   if (!snapshot) return []
   const rows: SidebarRow[] = []
   for (const record of snapshot.directories) {
-    const matchingSessions = query ? record.sessions.filter((session) => rowMatchesQuery({ key: session.id, kind: "session", record, session }, query)) : record.sessions
+    const matchingSessions = query
+      ? record.sessions.filter((session) => rowMatchesQuery({ key: session.id, kind: "session", record, session }, query))
+      : record.sessions
     const directoryMatches = rowMatchesQuery({ key: record.directory, kind: "directory", record }, query)
     if (!directoryMatches && matchingSessions.length === 0) continue
 
@@ -65,6 +78,17 @@ function useNowTick() {
     const timer = setInterval(() => setValue(Date.now()), 30_000)
     return () => clearInterval(timer)
   }, [])
+  return value
+}
+
+function useFrame(intervalMs: number) {
+  const [value, setValue] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setValue((current) => current + 1)
+    }, intervalMs)
+    return () => clearInterval(timer)
+  }, [intervalMs])
   return value
 }
 
@@ -102,16 +126,62 @@ function wrapText(input: string, width: number) {
   return lines
 }
 
-function sectionTitle(title: string) {
-  return `--- ${title.toUpperCase()} ---`
+function sectionRule(title: string, width: number) {
+  const prefix = `--[ ${title} ]`
+  if (prefix.length >= width) return truncate(prefix, width)
+  return prefix + "-".repeat(width - prefix.length)
+}
+
+function metricLine(label: string, value: string, width: number) {
+  return truncate(`${label.toUpperCase().padEnd(10)} ${value}`, width)
+}
+
+function snapshotHasKey(snapshot: Snapshot | null, key?: string) {
+  if (!snapshot || !key) return false
+  if (key.startsWith("dir:")) {
+    return snapshot.directories.some((record) => record.directory === key.slice(4))
+  }
+  if (key.startsWith("session:")) {
+    return snapshot.directories.some((record) => record.sessions.some((session) => session.id === key.slice(8)))
+  }
+  return false
+}
+
+function findSessionInSnapshot(snapshot: Snapshot | null, sessionID?: string) {
+  if (!snapshot || !sessionID) return undefined
+  for (const record of snapshot.directories) {
+    const session = record.sessions.find((item) => item.id === sessionID)
+    if (session) {
+      return { record, session }
+    }
+  }
+  return undefined
 }
 
 function describeOpenResult(result: { backend?: string; action: "focused" | "opened"; windowID?: string }) {
   if (result.backend === "tmux") {
     return result.action === "focused" ? "Loaded selected session in preview" : "Opened tmux session"
   }
-  if (result.backend === "current-terminal") return "Switching current terminal to OpenCode…"
+  if (result.backend === "current-terminal") return "Switching current terminal to OpenCode..."
   return result.action === "focused" ? `Focused existing ${result.backend} window` : `Opened new ${result.backend} window`
+}
+
+function Panel(props: {
+  title: string
+  width: number
+  borderColor?: BorderColor
+  titleColor?: TextColor
+  children?: React.ReactNode
+}) {
+  const { title, width, borderColor = "gray", titleColor = "cyanBright", children } = props
+  return (
+    <Box flexDirection="column" borderStyle="single" borderColor={borderColor} paddingX={1}>
+      <Text color={titleColor} bold>
+        {truncate(title, width)}
+      </Text>
+      {children}
+    </Box>
+  )
 }
 
 export function App() {
@@ -121,14 +191,24 @@ export function App() {
   const [selectedKey, setSelectedKey] = useState<string>()
   const [mode, setMode] = useState<Mode>("browse")
   const [inputValue, setInputValue] = useState("")
-  const [status, setStatus] = useState("Booting opencode server…")
+  const [status, setStatus] = useState("Booting opencode server...")
   const [error, setError] = useState<string>()
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string>()
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>()
   const [stickyStatusUntil, setStickyStatusUntil] = useState(0)
   const width = process.stdout.columns ?? 100
   const height = process.stdout.rows ?? 24
   const now = useNowTick()
+  const frame = useFrame(160)
+  const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length]
+  const liveGlyph = LIVE_FRAMES[frame % LIVE_FRAMES.length]
+  const selectGlyph = SELECT_FRAMES[frame % SELECT_FRAMES.length]
+  const inputCursor = frame % 2 === 0 ? "_" : " "
+  const compactLayout = width < 44 || height < 28
+  const panelGap = compactLayout ? 0 : 1
+  const showBanner = !compactLayout
+  const panelTextWidth = Math.max(18, width - 8)
   const rows = useMemo(() => buildRows(snapshot, expanded, mode === "search" ? inputValue : ""), [expanded, inputValue, mode, snapshot])
   const selectedIndex = useMemo(() => {
     if (!rows.length) return 0
@@ -137,37 +217,45 @@ export function App() {
     return match >= 0 ? match : 0
   }, [rows, selectedKey])
   const selectedRow = rows[selectedIndex]
+  const previewSession = useMemo(() => findSessionInSnapshot(snapshot, snapshot?.previewSessionID), [snapshot])
 
   const setTemporaryStatus = useCallback((message: string) => {
     setStatus(message)
     setStickyStatusUntil(Date.now() + STATUS_MESSAGE_HOLD_MS)
   }, [])
 
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    setError(undefined)
-    try {
-      const next = await service.getSnapshot()
-      setSnapshot(next)
-      if (Date.now() > stickyStatusUntil) {
-        setStatus(`Connected to ${next.baseUrl}  ·  backend: ${service.describeBackend()}`)
-      }
-      setExpanded((current) => {
-        const updated = { ...current }
-        for (const [index, record] of next.directories.entries()) {
-          if (!(record.directory in updated)) {
-            updated[record.directory] = record.pinned || index < 6
-          }
+  const refresh = useCallback(
+    async (preferredSelectedKey?: string) => {
+      setLoading(true)
+      setError(undefined)
+      try {
+        const next = await service.getSnapshot()
+        setSnapshot(next)
+        if (Date.now() > stickyStatusUntil) {
+          setStatus(`Connected to ${next.baseUrl} [${service.describeBackend()}]`)
         }
-        return updated
-      })
-      setSelectedKey((current) => current ?? (next.directories[0] ? `dir:${next.directories[0].directory}` : undefined))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setLoading(false)
-    }
-  }, [stickyStatusUntil])
+        setExpanded((current) => {
+          const updated = { ...current }
+          for (const [index, record] of next.directories.entries()) {
+            if (!(record.directory in updated)) {
+              updated[record.directory] = record.pinned || index < 6
+            }
+          }
+          return updated
+        })
+        setSelectedKey((current) => {
+          if (preferredSelectedKey && snapshotHasKey(next, preferredSelectedKey)) return preferredSelectedKey
+          if (current && snapshotHasKey(next, current)) return current
+          return next.directories[0] ? `dir:${next.directories[0].directory}` : undefined
+        })
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setLoading(false)
+      }
+    },
+    [stickyStatusUntil],
+  )
 
   useEffect(() => {
     const abort = new AbortController()
@@ -181,6 +269,13 @@ export function App() {
       clearInterval(timer)
     }
   }, [refresh])
+
+  useEffect(() => {
+    if (!deleteTarget) return
+    if (snapshotHasKey(snapshot, `session:${deleteTarget.sessionID}`)) return
+    setDeleteTarget(undefined)
+    setTemporaryStatus("Selected session is already gone")
+  }, [deleteTarget, setTemporaryStatus, snapshot])
 
   useEffect(() => {
     if (!rows.length && snapshot?.directories.length) {
@@ -217,14 +312,13 @@ export function App() {
     }
 
     if (mode === "pin") {
-      setBusy(`Adding ${value}…`)
+      setBusy(`Adding ${value}...`)
       try {
         const directory = await service.pinDirectory(value)
         setTemporaryStatus(`Pinned ${directory}`)
         setMode("browse")
         setInputValue("")
-        await refresh()
-        setSelectedKey(`dir:${directory}`)
+        await refresh(`dir:${directory}`)
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause))
       } finally {
@@ -235,7 +329,7 @@ export function App() {
 
   const openSelection = useCallback(async () => {
     if (!selectedRow) return
-    setBusy(selectedRow.kind === "session" ? `Opening ${selectedRow.session.title}…` : `Opening ${selectedRow.record.label}…`)
+    setBusy(selectedRow.kind === "session" ? `Opening ${selectedRow.session.title || "New session"}...` : `Opening ${selectedRow.record.label}...`)
     try {
       const result =
         selectedRow.kind === "session"
@@ -244,8 +338,7 @@ export function App() {
       setTemporaryStatus(describeOpenResult(result))
       setMode("browse")
       setInputValue("")
-      await refresh()
-      setSelectedKey(`session:${result.sessionID}`)
+      await refresh(`session:${result.sessionID}`)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -256,14 +349,27 @@ export function App() {
   const openLatestOrCreate = useCallback(async () => {
     if (!selectedRow) return
     const record = selectedRow.record
-    setBusy(`Opening ${record.label}…`)
+    setBusy(`Opening ${record.label}...`)
     try {
       const result = record.sessions[0]
         ? await service.openSession(record.directory, record.sessions[0])
         : await service.openNewSession(record.directory)
       setTemporaryStatus(describeOpenResult(result))
-      await refresh()
-      setSelectedKey(`session:${result.sessionID}`)
+      await refresh(`session:${result.sessionID}`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setBusy(undefined)
+    }
+  }, [refresh, selectedRow, setTemporaryStatus])
+
+  const createNewSession = useCallback(async () => {
+    if (!selectedRow) return
+    setBusy(`Creating a new session for ${selectedRow.record.label}...`)
+    try {
+      const result = await service.openNewSession(selectedRow.record.directory)
+      setTemporaryStatus(describeOpenResult(result))
+      await refresh(`session:${result.sessionID}`)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -273,11 +379,11 @@ export function App() {
 
   const unpinSelection = useCallback(async () => {
     if (!selectedRow || !selectedRow.record.pinned) return
-    setBusy(`Removing ${selectedRow.record.label} from pins…`)
+    setBusy(`Removing ${selectedRow.record.label} from pins...`)
     try {
       await service.unpinDirectory(selectedRow.record.directory)
       setTemporaryStatus(`Unpinned ${selectedRow.record.directory}`)
-      await refresh()
+      await refresh(rowKey(selectedRow))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -285,256 +391,343 @@ export function App() {
     }
   }, [refresh, selectedRow, setTemporaryStatus])
 
-  const deleteSelection = useCallback(async () => {
-    if (!selectedRow || selectedRow.kind !== "session") return
-    setBusy(`Deleting ${selectedRow.session.title}…`)
-    try {
-      await service.deleteSession(selectedRow.record.directory, selectedRow.session.id)
-      setTemporaryStatus(`Deleted session ${selectedRow.session.title}`)
-      await refresh()
-      setSelectedKey(`dir:${selectedRow.record.directory}`)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setBusy(undefined)
-    }
-  }, [refresh, selectedRow, setTemporaryStatus])
-
-  useInput((input, key) => {
-    if (busy) {
-      if (input === "q" || key.escape) exit()
+  const requestDeleteSelection = useCallback(() => {
+    if (!selectedRow || selectedRow.kind !== "session") {
+      setTemporaryStatus("Select a session to delete")
       return
     }
+    setDeleteTarget({
+      sessionID: selectedRow.session.id,
+      directory: selectedRow.record.directory,
+      title: selectedRow.session.title || "New session",
+    })
+  }, [selectedRow, setTemporaryStatus])
 
-    if (mode === "search" || mode === "pin") {
-      if (mode === "search") {
-        if (key.upArrow) {
-          move(-1)
+  const confirmDeleteSelection = useCallback(async () => {
+    if (!deleteTarget) return
+    const target = deleteTarget
+    setDeleteTarget(undefined)
+    setSelectedKey(`dir:${target.directory}`)
+    setBusy(`Deleting ${target.title}...`)
+    try {
+      await service.deleteSession(target.directory, target.sessionID)
+      setTemporaryStatus(`Deleted session ${target.title}`)
+      await refresh(`dir:${target.directory}`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setBusy(undefined)
+    }
+  }, [deleteTarget, refresh, setTemporaryStatus])
+
+  const cancelDeleteSelection = useCallback(() => {
+    if (!deleteTarget) return
+    setDeleteTarget(undefined)
+    setTemporaryStatus("Delete cancelled")
+  }, [deleteTarget, setTemporaryStatus])
+
+  useInput(
+    (input, key) => {
+      const loweredInput = input.toLowerCase()
+
+      if (deleteTarget) {
+        if (key.escape || loweredInput === "n") {
+          cancelDeleteSelection()
           return
         }
-        if (key.downArrow) {
-          move(1)
-          return
+        if (key.return || loweredInput === "y") {
+          void confirmDeleteSelection()
         }
+        return
       }
-      if (key.escape) {
-        if (mode === "search" && inputValue) {
-          setInputValue("")
-        } else {
-          setMode("browse")
-          setInputValue("")
-          setTemporaryStatus("Ready")
+
+      if (busy) {
+        if (input === "q" || (key.ctrl && input === "c")) exit()
+        return
+      }
+
+      if (mode === "search" || mode === "pin") {
+        if (mode === "search") {
+          if (key.upArrow) {
+            move(-1)
+            return
+          }
+          if (key.downArrow) {
+            move(1)
+            return
+          }
         }
+        if (key.escape) {
+          if (mode === "search" && inputValue) {
+            setInputValue("")
+          } else {
+            setMode("browse")
+            setInputValue("")
+            setTemporaryStatus("Ready")
+          }
+          return
+        }
+        if (key.return) {
+          if (mode === "search") {
+            void openSelection()
+            return
+          }
+          void commitInput()
+          return
+        }
+        if (key.backspace || key.delete) {
+          setInputValue((current) => current.slice(0, -1))
+          return
+        }
+        if (isPrintable(input)) {
+          setInputValue((current) => current + input)
+        }
+        return
+      }
+
+      if (input === "q" || (key.ctrl && input === "c")) {
+        exit()
+        return
+      }
+      if (input === "/") {
+        setMode("search")
+        setInputValue("")
+        setTemporaryStatus("Type to filter projects and sessions")
+        return
+      }
+      if (input === "a") {
+        setMode("pin")
+        setInputValue("")
+        setTemporaryStatus("Enter an absolute or ~/ path to pin")
+        return
+      }
+      if (input === "x") {
+        void unpinSelection()
+        return
+      }
+      if (input === "d") {
+        requestDeleteSelection()
+        return
+      }
+      if (input === "r") {
+        void refresh()
+        return
+      }
+      if (input === "n") {
+        void createNewSession()
+        return
+      }
+      if (input === "o") {
+        void openLatestOrCreate()
+        return
+      }
+      if (input === " ") {
+        if (selectedRow?.kind === "directory") toggleDirectory(selectedRow.record)
         return
       }
       if (key.return) {
-        if (mode === "search") {
-          void openSelection()
-          return
-        }
-        void commitInput()
+        void openSelection()
         return
       }
-      if (key.backspace || key.delete) {
-        setInputValue((current) => current.slice(0, -1))
+      if (key.upArrow) {
+        move(-1)
         return
       }
-      if (isPrintable(input)) {
-        setInputValue((current) => current + input)
+      if (key.downArrow) {
+        move(1)
+        return
       }
-      return
-    }
-
-    if (input === "q" || (key.ctrl && input === "c")) {
-      exit()
-      return
-    }
-    if (input === "/") {
-      setMode("search")
-      setInputValue("")
-      setTemporaryStatus("Type to filter projects and sessions")
-      return
-    }
-    if (input === "a") {
-      setMode("pin")
-      setInputValue("")
-      setTemporaryStatus("Enter an absolute or ~/ path to pin")
-      return
-    }
-    if (input === "x") {
-      void unpinSelection()
-      return
-    }
-    if (input === "d") {
-      void deleteSelection()
-      return
-    }
-    if (input === "r") {
-      void refresh()
-      return
-    }
-    if (input === "n") {
-      if (!selectedRow) return
-      setBusy(`Creating a new session for ${selectedRow.record.label}…`)
-      void (async () => {
-        try {
-          const result = await service.openNewSession(selectedRow.record.directory)
-          setTemporaryStatus(describeOpenResult(result))
-          await refresh()
-          setSelectedKey(`session:${result.sessionID}`)
-        } catch (cause) {
-          setError(cause instanceof Error ? cause.message : String(cause))
-        } finally {
-          setBusy(undefined)
-        }
-      })()
-      return
-    }
-    if (input === "o") {
-      void openLatestOrCreate()
-      return
-    }
-    if (input === " ") {
-      if (selectedRow?.kind === "directory") toggleDirectory(selectedRow.record)
-      return
-    }
-    if (key.return) {
-      if (selectedRow?.kind === "directory") {
-        void openSelection()
-      } else {
-        void openSelection()
+      if (key.leftArrow && selectedRow?.kind === "directory") {
+        toggleDirectory(selectedRow.record, false)
+        return
       }
-      return
-    }
-    if (key.upArrow) {
-      move(-1)
-      return
-    }
-    if (key.downArrow) {
-      move(1)
-      return
-    }
-    if (key.leftArrow && selectedRow?.kind === "directory") {
-      toggleDirectory(selectedRow.record, false)
-      return
-    }
-    if (key.rightArrow && selectedRow?.kind === "directory") {
-      toggleDirectory(selectedRow.record, true)
-    }
-  }, { isActive: Boolean(process.stdin.isTTY) })
+      if (key.rightArrow && selectedRow?.kind === "directory") {
+        toggleDirectory(selectedRow.record, true)
+      }
+    },
+    { isActive: Boolean(process.stdin.isTTY) },
+  )
 
-  const header = useMemo(() => {
-    if (!snapshot) return "Booting OpenCode Sidebar"
-    const activeCount = snapshot.activeSessions.length
-    return `OpenCode Sidebar v0.1  ·  ${snapshot.directories.length} dirs  ·  ${activeCount} active`
-  }, [snapshot])
+  const directoryCount = snapshot?.directories.length ?? 0
+  const sessionCount = snapshot?.directories.reduce((count, record) => count + record.sessions.length, 0) ?? 0
+  const activeCount = snapshot?.activeSessions.length ?? 0
 
   const detail = useMemo(() => {
     if (!selectedRow) return "No project selected"
     if (selectedRow.kind === "directory") {
       const active = selectedRow.record.activeSessionIDs.size
-      return `${selectedRow.record.directory}  ·  ${selectedRow.record.sessions.length} session${selectedRow.record.sessions.length === 1 ? "" : "s"}${active ? `  ·  ${active} active` : ""}`
+      return `${selectedRow.record.sessions.length} sessions${active ? ` | ${active} live` : ""}`
     }
     const active = selectedRow.record.activeSessionIDs.has(selectedRow.session.id)
-    return `${selectedRow.record.directory}  ·  ${selectedRow.session.id}${active ? "  ·  active" : ""}`
+    return `${selectedRow.session.id}${active ? " | live" : ""}`
   }, [selectedRow])
 
-  const promptLabel = mode === "search" ? "Search" : mode === "pin" ? "Pin" : undefined
-  const controlsLines = useMemo(() => {
-    const compact = width < 40
-    const text = compact
-      ? "Enter load  n new  d delete  / search  Alt-b launcher"
-      : "Enter recall/load  n new  d delete  / search  a pin  x unpin  Alt-b launcher  Alt-] preview"
-    return wrapText(text, Math.max(8, width - 2))
-  }, [width])
-  const headerLines = useMemo(() => wrapText(status, Math.max(8, width - 2)), [status, width])
-  const reservedLines = mode === "browse" ? 8 + controlsLines.length + Math.max(0, headerLines.length - 1) : 8
-  const listHeightAdjusted = Math.max(6, height - reservedLines)
-  const visibleRowsAdjusted = useMemo(() => windowRows(rows, selectedIndex, listHeightAdjusted), [listHeightAdjusted, rows, selectedIndex])
-  const firstVisibleAdjusted = useMemo(() => {
-    if (!visibleRowsAdjusted.length) return 0
-    return rows.findIndex((row) => row.key === visibleRowsAdjusted[0]?.key)
-  }, [rows, visibleRowsAdjusted])
-  const footerHint = rows.length > visibleRowsAdjusted.length ? `${selectedIndex + 1}/${rows.length}  ·  ${detail}` : detail
+  const previewLabel = useMemo(() => {
+    if (!previewSession) return "idle"
+    const label = previewSession.session.title || previewSession.record.label
+    return truncate(label, compactLayout ? 18 : Math.max(18, panelTextWidth - 16))
+  }, [compactLayout, panelTextWidth, previewSession])
+
+  const bannerTitle = compactLayout ? `:: OPENCODE SIDEBAR :: [${spinner}]` : `:: OPENCODE SIDEBAR v0.1 :: [SYNC ${spinner}]`
+  const statusTitle = compactLayout ? `:: OPENCODE SIDEBAR :: [${spinner}]` : `STATUS / MATRIX [${liveGlyph}]`
+  const showToolsPanel = !compactLayout || !deleteTarget
+  const apiState = snapshot ? "CONNECTED" : error ? "DEGRADED" : "BOOTING"
+  const statusLines = compactLayout
+    ? [
+        metricLine("api", `[${apiState}]`, panelTextWidth),
+        metricLine("preview", `[${previewLabel}]`, panelTextWidth),
+        metricLine("workspace", `[${directoryCount} D | ${sessionCount} S | ${activeCount} LIVE]`, panelTextWidth),
+      ]
+    : [
+        metricLine("api", `[${apiState}]`, panelTextWidth),
+        metricLine("backend", `[${service.describeBackend().toUpperCase()}]`, panelTextWidth),
+        metricLine("preview", `[${previewLabel}]`, panelTextWidth),
+        metricLine("workspace", `[${directoryCount} D | ${sessionCount} S | ${activeCount} LIVE]`, panelTextWidth),
+      ]
+  const statusMessageText = error ? `STATE      ERROR :: ${error}` : busy ? `STATE      WORK :: ${busy} [${spinner}]` : `STATE      LINK :: ${status}`
+  const statusMessageLines = wrapText(statusMessageText, panelTextWidth).slice(0, compactLayout ? 1 : 2)
+  const toolsLines = wrapText(
+    compactLayout
+      ? "[ENT] LOAD  [N] NEW  [D] DEL  [/] FIND  [A] PIN"
+      : "[ENT] LOAD  [N] NEW  [D] DEL  [/] FIND  [A] PIN  [X] UNPIN  [SPC] EXPAND  [R] REFRESH  [Q] QUIT  [ALT-B] LAUNCH  [ALT-]] PREVIEW",
+    panelTextWidth,
+  ).slice(0, compactLayout ? 1 : 3)
+  const promptPrimary = mode === "search"
+    ? `/ ${truncate(inputValue, Math.max(0, panelTextWidth - 4))}${inputCursor}`
+    : mode === "pin"
+      ? `+ ${truncate(inputValue, Math.max(0, panelTextWidth - 4))}${inputCursor}`
+      : truncate(selectedRow?.record.directory ?? "No project selected", panelTextWidth)
+  const promptDetail = mode === "search" || mode === "pin"
+    ? ["[Enter] submit  [Esc] cancel"]
+    : wrapText(rows.length > 0 ? `${selectedIndex + 1}/${rows.length}  ${detail}` : `FOCUS ${detail}`, panelTextWidth).slice(0, compactLayout ? 1 : 2)
+  const deleteLines = deleteTarget
+    ? [
+        `Delete session \"${truncate(deleteTarget.title, Math.max(8, panelTextWidth - 18))}\"?`,
+        truncate(deleteTarget.directory, panelTextWidth),
+        "[Enter/Y] confirm  [Esc/N] cancel",
+      ]
+    : []
+  const projectHeader = sectionRule(rows.length ? `PROJECT MATRIX ${selectedIndex + 1}/${rows.length}` : "PROJECT MATRIX", panelTextWidth)
+  const projectFooter = rows.length > 0 ? truncate(`FOCUS :: ${selectedIndex + 1}/${rows.length} :: ${detail}`, panelTextWidth) : truncate(`FOCUS :: ${detail}`, panelTextWidth)
+
+  const projectPanelStaticHeight = 2 + (loading && !snapshot ? 1 : 0) + (!rows.length && !loading ? 1 : 0)
+  const fixedHeight =
+    (showBanner ? 3 + panelGap : 0) +
+    (3 + statusLines.length + statusMessageLines.length + panelGap) +
+    (deleteTarget ? 3 + deleteLines.length + panelGap : 0) +
+    (showToolsPanel ? 3 + toolsLines.length + panelGap : 0) +
+    (3 + promptDetail.length + panelGap) +
+    projectPanelStaticHeight
+  const visibleRowCount = Math.max(1, height - fixedHeight)
+  const visibleRows = useMemo(() => windowRows(rows, selectedIndex, visibleRowCount), [rows, selectedIndex, visibleRowCount])
+  const firstVisibleIndex = useMemo(() => {
+    if (!visibleRows.length) return 0
+    return rows.findIndex((row) => row.key === visibleRows[0]?.key)
+  }, [rows, visibleRows])
 
   return (
     <Box flexDirection="column" paddingX={1} paddingTop={1}>
-      <Text bold color="cyanBright">
-        {truncate(header, width - 2)}
-      </Text>
-      <Text color="gray">{sectionTitle("Status")}</Text>
-      {(error ? wrapText(error, Math.max(8, width - 2)) : busy ? wrapText(busy, Math.max(8, width - 2)) : headerLines).map((line, index) => (
-        <Text key={`status-${index}`} color={error ? "redBright" : busy ? "yellowBright" : "gray"}>
-          {truncate(line, width - 2)}
-        </Text>
-      ))}
-      {promptLabel ? (
-        <Text color="greenBright">
-          {promptLabel}: {inputValue}
-          <Text color="white">█</Text>
-        </Text>
-      ) : (
-        <Box flexDirection="column">
-          <Text color="gray">{sectionTitle("Controls")}</Text>
-          {controlsLines.map((line, index) => (
-            <Text key={`control-${index}`} color="gray">
-              {truncate(line, width - 2)}
+      {showBanner ? <Panel title={bannerTitle} width={panelTextWidth} borderColor="cyan" titleColor="cyanBright" /> : null}
+
+      <Box marginTop={panelGap}>
+        <Panel title={statusTitle} width={panelTextWidth}>
+          {statusLines.map((line, index) => (
+            <Text key={`status-line-${index}`} color="white">
+              {truncate(line, panelTextWidth)}
             </Text>
           ))}
+          {statusMessageLines.map((line, index) => (
+            <Text key={`status-message-${index}`} color={error ? "redBright" : busy ? "yellowBright" : "gray"}>
+              {truncate(line, panelTextWidth)}
+            </Text>
+          ))}
+        </Panel>
+      </Box>
+
+      {deleteTarget ? (
+        <Box marginTop={panelGap}>
+          <Panel title="DELETE / ARM / CONFIRM" width={panelTextWidth} borderColor="redBright" titleColor="redBright">
+            {deleteLines.map((line, index) => (
+              <Text key={`delete-${index}`} color={index === 2 ? "yellowBright" : "white"}>
+                {truncate(line, panelTextWidth)}
+              </Text>
+            ))}
+          </Panel>
         </Box>
-      )}
-      <Box flexDirection="column" marginTop={1}>
-        <Text color="gray">{sectionTitle("Projects")}</Text>
-        {loading && !snapshot ? <Text color="yellow">Loading snapshot…</Text> : null}
-        {!rows.length && !loading ? <Text color="gray">No projects yet. Press a to pin a directory.</Text> : null}
-        {visibleRowsAdjusted.map((row, visibleIndex) => {
-          const index = firstVisibleAdjusted + visibleIndex
+      ) : null}
+
+      <Box marginTop={panelGap} flexDirection="column">
+        <Text color="gray">{projectHeader}</Text>
+        {loading && !snapshot ? <Text color="yellowBright">SYNC :: workspace...</Text> : null}
+        {!rows.length && !loading ? <Text color="gray">No projects yet. Press A to pin a directory.</Text> : null}
+        {visibleRows.map((row, visibleIndex) => {
+          const index = firstVisibleIndex + visibleIndex
           const selected = index === selectedIndex
-          const isActiveSession = row.kind === "session" && row.record.activeSessionIDs.has(row.session.id)
-          const isPreviewSession = row.kind === "session" && snapshot?.previewSessionID === row.session.id
-          const foreground = selected ? "black" : row.kind === "directory" ? "cyanBright" : isActiveSession ? "greenBright" : isPreviewSession ? "yellowBright" : "white"
-          const background = selected ? "green" : undefined
-          const availableWidth = Math.max(18, width - 10)
+          const selectedForeground: TextColor = selected ? "black" : undefined
+          const selectedBackground = selected ? "cyan" : undefined
+          const rowWidth = panelTextWidth
+
           if (row.kind === "directory") {
             const expandedNow = mode === "search" ? true : expanded[row.record.directory] ?? row.record.pinned
-            const marker = expandedNow ? "▾" : "▸"
-            const activeCount = row.record.activeSessionIDs.size
+            const activeDirectoryCount = row.record.activeSessionIDs.size
             const hasPreview = row.record.sessions.some((session) => snapshot?.previewSessionID === session.id)
-            const openMark = activeCount > 0 ? "◆" : hasPreview ? "▶" : row.record.openSessionIDs.size > 0 ? "●" : "○"
-            const suffix = activeCount > 0 ? `${activeCount}/${row.record.sessions.length}` : String(row.record.sessions.length)
+            const stateBadge = activeDirectoryCount > 0 ? `[${liveGlyph}]` : hasPreview ? `[>]` : row.record.openSessionIDs.size > 0 ? `[+]` : `[.]`
+            const pinBadge = row.record.pinned ? "[P]" : "[ ]"
+            const suffix = activeDirectoryCount > 0 ? `[${activeDirectoryCount}/${row.record.sessions.length}]` : `[${row.record.sessions.length}]`
+            const label = `${selected ? `[${selectGlyph}]` : "[ ]"} ${expandedNow ? "v" : ">"} ${pinBadge}${stateBadge} ${row.record.label}`
+            const availableWidth = Math.max(8, rowWidth - suffix.length - 1)
             return (
-              <Box key={row.key} justifyContent="space-between">
-                <Text color={foreground} backgroundColor={background} bold>
-                  {truncate(`${marker} ${openMark} ${row.record.label}${row.record.pinned ? "  [pinned]" : ""}`, availableWidth)}
+              <Box key={row.key} width={rowWidth} justifyContent="space-between">
+                <Text color={selected ? selectedForeground : "cyanBright"} backgroundColor={selectedBackground} bold>
+                  {truncate(label, availableWidth)}
                 </Text>
-                <Text color={selected ? "black" : "gray"} backgroundColor={background}>
+                <Text color={selected ? selectedForeground : "gray"} backgroundColor={selectedBackground}>
                   {suffix}
                 </Text>
               </Box>
             )
           }
 
-          const open = row.record.activeSessionIDs.has(row.session.id)
-            ? "◆"
-            : snapshot?.previewSessionID === row.session.id
-              ? "▶"
-              : row.record.openSessionIDs.has(row.session.id)
-                ? "●"
-                : "○"
+          const isActive = row.record.activeSessionIDs.has(row.session.id)
+          const isPreview = snapshot?.previewSessionID === row.session.id
+          const sessionBadge = isActive ? `[${liveGlyph}]` : isPreview ? `[>]` : row.record.openSessionIDs.has(row.session.id) ? `[+]` : `[.]`
+          const label = `${selected ? `[${selectGlyph}]` : " | "}-- ${sessionBadge} ${row.session.title || "New session"}`
+          const suffix = `[${relativeTime(row.session.time.updated, now)}]`
+          const availableWidth = Math.max(8, rowWidth - suffix.length - 1)
+          const color: TextColor = selected ? selectedForeground : isActive ? "greenBright" : isPreview ? "magentaBright" : "white"
           return (
-            <Box key={row.key} justifyContent="space-between" marginLeft={2}>
-              <Text color={foreground} backgroundColor={background}>
-                {truncate(`${open} ${row.session.title || "New session"}`, availableWidth)}
+            <Box key={row.key} width={rowWidth} justifyContent="space-between">
+              <Text color={color} backgroundColor={selectedBackground}>
+                {truncate(label, availableWidth)}
               </Text>
-              <Text color={selected ? "black" : "gray"} backgroundColor={background}>
-                {relativeTime(row.session.time.updated, now)}
+              <Text color={selected ? selectedForeground : "gray"} backgroundColor={selectedBackground}>
+                {suffix}
               </Text>
             </Box>
           )
         })}
+        <Text color="gray">{projectFooter}</Text>
       </Box>
-      <Box marginTop={1} borderStyle="round" borderColor="gray" paddingX={1}>
-        <Text color="gray">{truncate(footerHint, width - 6)}</Text>
+
+      {showToolsPanel ? (
+        <Box marginTop={panelGap}>
+          <Panel title="TOOLS / MODES" width={panelTextWidth}>
+            {toolsLines.map((line, index) => (
+              <Text key={`tool-${index}`} color="gray">
+                {truncate(line, panelTextWidth)}
+              </Text>
+            ))}
+          </Panel>
+        </Box>
+      ) : null}
+
+      <Box marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? "gray" : "greenBright"} flexDirection="column" paddingX={1}>
+        <Text color={mode === "browse" ? "white" : "greenBright"}>{truncate(promptPrimary, panelTextWidth)}</Text>
+        {promptDetail.map((line, index) => (
+          <Text key={`prompt-${index}`} color="gray">
+            {truncate(line, panelTextWidth)}
+          </Text>
+        ))}
       </Box>
     </Box>
   )
