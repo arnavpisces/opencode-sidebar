@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+exec env OPENCODE_SIDEBAR_BACKEND=current-terminal bun run "$ROOT/src/index.tsx"

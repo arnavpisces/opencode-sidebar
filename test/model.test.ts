@@ -1,0 +1,50 @@
+import { describe, expect, test } from "bun:test"
+import { buildSnapshot } from "../src/lib/model.js"
+
+describe("buildSnapshot", () => {
+  test("groups sessions by exact directory and preserves pins", () => {
+    const snapshot = buildSnapshot({
+      baseUrl: "http://127.0.0.1:42112",
+      serverPort: 42112,
+      pinnedDirectories: ["/tmp/zeta"],
+      panes: [
+        {
+          window_id: 1,
+          tab_id: 1,
+          pane_id: 9,
+          workspace: "opencode-session-session_a",
+          title: "A",
+          cwd: "/tmp/alpha",
+        },
+      ],
+      projects: [
+        {
+          id: "project_a",
+          name: "Alpha",
+          worktree: "/tmp/alpha",
+          sandboxes: [],
+        },
+      ],
+      sessions: [
+        {
+          id: "session_a",
+          title: "First",
+          directory: "/tmp/alpha",
+          time: { created: 1, updated: 10 },
+          project: null,
+        },
+        {
+          id: "session_b",
+          title: "Second",
+          directory: "/tmp/beta",
+          time: { created: 1, updated: 8 },
+          project: null,
+        },
+      ],
+    })
+
+    expect(snapshot.directories.map((item) => item.directory)).toEqual(["/tmp/zeta", "/tmp/alpha", "/tmp/beta"])
+    expect(snapshot.directories[1].label).toBe("Alpha")
+    expect(snapshot.directories[1].openSessionIDs.has("session_a")).toBe(true)
+  })
+})

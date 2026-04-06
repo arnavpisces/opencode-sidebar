@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+exec wezterm start \
+  --workspace opencode-sidebar-launcher \
+  --cwd "$ROOT" \
+  -- env OPENCODE_SIDEBAR_BACKEND=wezterm bun run "$ROOT/src/index.tsx"
