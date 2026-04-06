@@ -46,7 +46,7 @@ bun install
 
 - `▶` means currently previewed
 - `◆` means active in background
-- state is stored in `~/.local/share/opencode-wezterm-sidebar/state.json`
+- state is stored in `~/.local/share/opencode-sidebar/state.json`
 
 ## License
 
