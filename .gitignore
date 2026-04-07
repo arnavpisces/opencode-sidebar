@@ -1,3 +1,8 @@
 node_modules/
 .DS_Store
 test/tmux-flow.log
+test/tmux-cleanup.log
+test/sidebar-sigint-cleanup.log
+test/sidebar-ctrlc-cleanup.log
+test/tmux-flow-debug.log
+test/sidebar-sigint-control-*.txt

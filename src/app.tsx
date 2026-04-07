@@ -140,6 +140,10 @@ function useTerminalSize() {
   return size
 }
 
+function minimumWidth(value: number) {
+  return Math.max(1, value)
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
 }
@@ -211,7 +215,7 @@ function Panel(props: {
 }) {
   const { title, width, borderColor = "gray", titleColor = "cyanBright", children } = props
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={borderColor} paddingX={1}>
+    <Box width={width + 4} flexDirection="column" borderStyle="single" borderColor={borderColor} paddingX={1}>
       <Text color={titleColor} bold>
         {truncate(title, width)}
       </Text>
@@ -245,7 +249,9 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
   const compactLayout = width < 44 || height < 28
   const panelGap = compactLayout ? 0 : 1
   const showBanner = !compactLayout
-  const panelTextWidth = Math.max(18, width - 4)
+  const panelOuterWidth = minimumWidth(width - 2)
+  const panelTextWidth = minimumWidth(panelOuterWidth - 4)
+  const sectionTextWidth = minimumWidth(width - 2)
   const rows = useMemo(() => buildRows(snapshot, expanded, mode === "search" ? inputValue : ""), [expanded, inputValue, mode, snapshot])
   const selectedIndex = useMemo(() => {
     if (!rows.length) return 0
@@ -705,7 +711,7 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
   const previewLabel = useMemo(() => {
     if (!previewSession) return "idle"
     const label = previewSession.session.title || previewSession.record.label
-    return truncate(label, compactLayout ? 18 : Math.max(18, panelTextWidth - 16))
+    return truncate(label, compactLayout ? panelTextWidth : minimumWidth(panelTextWidth - 16))
   }, [compactLayout, panelTextWidth, previewSession])
 
   const bannerTitle = compactLayout ? `:: OPENCODE SIDEBAR :: [${spinner}]` : `:: OPENCODE SIDEBAR v0.1 :: [SYNC ${spinner}]`
@@ -732,7 +738,7 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
     compactLayout
       ? "[Enter] Load  [N] New  [A] Add  [/] Find"
       : "[Enter] Load  [N] New  [D] Delete  [K] Kill  [/] Find  [A] Add  [X] Unpin  [Space] Expand  [R] Refresh  [Q] Quit",
-    Math.max(18, panelTextWidth - 2),
+    panelTextWidth,
   )
   const addProjectLines = showAddProjectModal
     ? [
@@ -750,14 +756,14 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
     : wrapTextHard(rows.length > 0 ? `${selectedIndex + 1}/${rows.length}  ${detail}` : `FOCUS ${detail}`, panelTextWidth)
   const deleteLines = deleteTarget
     ? [
-        `Delete session \"${truncate(deleteTarget.title, Math.max(8, panelTextWidth - 18))}\"?`,
+        `Delete session \"${truncate(deleteTarget.title, minimumWidth(panelTextWidth - 18))}\"?`,
         truncate(deleteTarget.directory, panelTextWidth),
         "[Enter/Y] confirm  [Esc/N] cancel",
       ]
     : []
   const killLines = killTarget
     ? [
-        `Kill running window for \"${truncate(killTarget.title, Math.max(8, panelTextWidth - 22))}\"?`,
+        `Kill running window for \"${truncate(killTarget.title, minimumWidth(panelTextWidth - 22))}\"?`,
         truncate(killTarget.directory, panelTextWidth),
         "[Enter/Y] confirm  [Esc/N] cancel",
       ]
@@ -838,7 +844,7 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
       ) : null}
 
       <Box marginTop={panelGap} flexDirection="column">
-        <Text color="gray">{projectHeader}</Text>
+        <Text color="gray">{truncate(projectHeader, sectionTextWidth)}</Text>
         {loading && !snapshot ? <Text color="yellowBright">SYNC :: workspace...</Text> : null}
         {!loading && snapshot?.directories.length === 0 ? <Text color="gray">No projects yet. Add a project folder to get started.</Text> : null}
         {visibleRows.map((row, visibleIndex) => {
@@ -851,7 +857,7 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
           if (row.kind === "action") {
             const suffix = "[ADD]"
             const label = `${selected ? `[${selectGlyph}]` : "[ ]"} + ${row.label}`
-            const availableWidth = Math.max(8, rowWidth - suffix.length - 1)
+            const availableWidth = minimumWidth(rowWidth - suffix.length - 1)
             return (
               <Box key={row.key} width={rowWidth} justifyContent="space-between">
                 <Text color={selected ? selectedForeground : "greenBright"} backgroundColor={selectedBackground} bold>
@@ -872,7 +878,7 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
             const marker = hasWorkingSession ? liveGlyph : activeDirectoryCount > 0 ? "|" : hasCompleted ? "*" : " "
             const suffix = activeDirectoryCount > 0 ? `${activeDirectoryCount}/${row.record.sessions.length}` : `${row.record.sessions.length}`
             const label = `${expandedNow ? "v" : ">"} ${row.record.label}`
-            const availableWidth = Math.max(8, rowWidth - suffix.length - 5)
+            const availableWidth = minimumWidth(rowWidth - suffix.length - 5)
             return (
               <Box key={row.key} width={rowWidth} justifyContent="space-between">
                 <Text color={selected ? selectedForeground : "cyanBright"} backgroundColor={selectedBackground} bold>
@@ -892,7 +898,7 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
           const marker = isWorking ? liveGlyph : completion ? "*" : isPreview ? ">" : isActive ? "|" : " "
           const label = `|-- ${marker} ${row.session.title || "New session"}`
           const suffix = relativeTime(row.session.time.updated, now)
-          const availableWidth = Math.max(8, rowWidth - suffix.length - 1)
+          const availableWidth = minimumWidth(rowWidth - suffix.length - 1)
           const color: TextColor = selected
             ? selectedForeground
             : completion
@@ -913,7 +919,7 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
             </Box>
           )
         })}
-        <Text color="gray">{projectFooter}</Text>
+        <Text color="gray">{truncate(projectFooter, sectionTextWidth)}</Text>
       </Box>
 
       {showToolsPanel ? (
@@ -929,7 +935,7 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
       ) : null}
 
       {mode !== "add-project" ? (
-        <Box marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? "gray" : "greenBright"} flexDirection="column" paddingX={1}>
+        <Box width={panelOuterWidth} marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? "gray" : "greenBright"} flexDirection="column" paddingX={1}>
           {promptPrimaryLines.map((line, index) => (
             <Text key={`prompt-primary-${index}`} color={mode === "browse" ? "white" : "greenBright"}>
               {line}

@@ -28,13 +28,22 @@ async function startTestControlChannel() {
         .map((line) => line.trim())
         .filter(Boolean)
       if (commands.length > 0) {
-        const snapshot = await service.getSnapshot()
         for (const command of commands) {
-          if (!command.startsWith("open:")) continue
-          const target = command.slice(5)
-          const session = snapshot.directories.flatMap((record) => record.sessions).find((item) => item.id === target)
-          if (session) {
-            await service.openSession(session.directory, session)
+          if (command.startsWith("open:")) {
+            const target = command.slice(5)
+            const snapshot = await service.getSnapshot()
+            const session = snapshot.directories.flatMap((record) => record.sessions).find((item) => item.id === target)
+            if (session) {
+              await service.openSession(session.directory, session)
+            }
+            continue
+          }
+
+          if (command.startsWith("new:")) {
+            const directory = command.slice(4)
+            if (directory) {
+              await service.openNewSession(directory)
+            }
           }
         }
         await fs.writeFile(file, "")
