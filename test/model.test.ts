@@ -47,4 +47,54 @@ describe("buildSnapshot", () => {
     expect(snapshot.directories[1].label).toBe("Alpha")
     expect(snapshot.directories[1].openSessionIDs.has("session_a")).toBe(true)
   })
+
+  test("preserves session runtime status metadata", () => {
+    const snapshot = buildSnapshot({
+      baseUrl: "http://127.0.0.1:42112",
+      serverPort: 42112,
+      pinnedDirectories: [],
+      panes: [],
+      projects: [],
+      sessions: [
+        {
+          id: "session_busy",
+          title: "Busy",
+          directory: "/tmp/alpha",
+          status: { type: "busy" },
+          time: { created: 1, updated: 10 },
+          project: null,
+        },
+        {
+          id: "session_done",
+          title: "Done",
+          directory: "/tmp/alpha",
+          status: { type: "idle", justCompleted: true },
+          time: { created: 1, updated: 9 },
+          project: null,
+        },
+      ],
+    })
+
+    expect(snapshot.directories[0].sessions[0].status).toEqual({ type: "busy" })
+    expect(snapshot.directories[0].sessions[1].status).toEqual({ type: "idle", justCompleted: true })
+  })
+
+  test("includes manually added directories even before sessions exist", () => {
+    const snapshot = buildSnapshot({
+      baseUrl: "http://127.0.0.1:42112",
+      serverPort: 42112,
+      pinnedDirectories: ["/tmp/manual-project"],
+      panes: [],
+      projects: [],
+      sessions: [],
+    })
+
+    expect(snapshot.directories).toHaveLength(1)
+    expect(snapshot.directories[0]).toMatchObject({
+      directory: "/tmp/manual-project",
+      pinned: true,
+      label: "manual-project",
+    })
+    expect(snapshot.directories[0].sessions).toEqual([])
+  })
 })

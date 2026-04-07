@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { MAX_BACKGROUND_SESSIONS } from "./constants.js"
 import type { ActiveSessionRecord } from "./types.js"
 import { sessionWindowTitle, tmuxWindowName } from "./util.js"
 
@@ -53,8 +54,8 @@ export async function listActiveSessionWindows(): Promise<ActiveSessionRecord[]>
     "-t",
     session,
     "-F",
-    `#{pane_id}\t#{window_id}\t#{window_name}\t#{window_active}\t#{${SESSION_OPTION}}\t#{${DIRECTORY_OPTION}}\t#{${TITLE_OPTION}}`,
-  ])
+      `#{pane_id}\t#{window_id}\t#{window_name}\t#{window_active}\t#{${SESSION_OPTION}}\t#{${DIRECTORY_OPTION}}\t#{${TITLE_OPTION}}`,
+    ])
 
   return output
     .split("\n")
@@ -72,6 +73,18 @@ export async function listActiveSessionWindows(): Promise<ActiveSessionRecord[]>
     }))
 }
 
+export function trimBackgroundSessions(records: ActiveSessionRecord[], maxBackgroundSessions = MAX_BACKGROUND_SESSIONS) {
+  if (maxBackgroundSessions < 0) return []
+  return [...records]
+    .filter((record) => !record.active)
+    .sort((a, b) => {
+      const windowA = Number(a.windowID.replace(/^@/, ""))
+      const windowB = Number(b.windowID.replace(/^@/, ""))
+      return windowA - windowB
+    })
+    .slice(0, Math.max(0, records.filter((record) => !record.active).length - maxBackgroundSessions))
+}
+
 export async function findWindowBySessionID(sessionID: string) {
   const windows = await listActiveSessionWindows()
   return windows.find((window) => window.sessionID === sessionID)
@@ -85,6 +98,24 @@ export async function findBackgroundWindowBySessionID(sessionID: string) {
     if (preview?.paneID && window.paneID === preview.paneID) return false
     return !window.active || Boolean(window.sessionID)
   })
+}
+
+export async function findAnyWindowBySessionID(sessionID: string) {
+  const preview = await getPreviewSessionMeta()
+  const windows = await listActiveSessionWindows()
+  const previewWindow = preview?.paneID ? windows.find((window) => window.paneID === preview.paneID) : undefined
+  if (previewWindow?.sessionID === sessionID) {
+    return {
+      ...previewWindow,
+      preview: true,
+    }
+  }
+  const parked = windows.find((window) => window.sessionID === sessionID)
+  if (!parked) return undefined
+  return {
+    ...parked,
+    preview: false,
+  }
 }
 
 export async function setPreviewSession(input: {
@@ -131,12 +162,50 @@ export async function clearPreviewSession() {
   await runTmux(["set-option", "-u", "-t", session, PREVIEW_PANE_OPTION]).catch(() => {})
 }
 
+export async function killSessionWindowBySessionID(sessionID: string) {
+  const preview = await getPreviewSessionMeta()
+  if (preview?.sessionID === sessionID && preview.paneID) {
+    await clearPreviewSession()
+    await killPane(preview.paneID).catch(() => {})
+    return true
+  }
+  const target = await findAnyWindowBySessionID(sessionID)
+  if (!target) return false
+  if (target.preview) {
+    await clearPreviewSession()
+  }
+  await killWindow(target.windowID)
+  return true
+}
+
 export async function getCurrentWindowID() {
   return runTmux(["display-message", "-p", "#{window_id}"])
 }
 
 export async function killWindow(windowID: string) {
   await runTmux(["kill-window", "-t", windowID])
+}
+
+export async function killPane(paneID: string) {
+  await runTmux(["kill-pane", "-t", paneID])
+}
+
+export async function pruneBackgroundSessions(options?: {
+  keepSessionIDs?: string[]
+  maxBackgroundSessions?: number
+}) {
+  const keep = new Set(options?.keepSessionIDs ?? [])
+  const windows = await listActiveSessionWindows()
+  const victims = trimBackgroundSessions(
+    windows.filter((window) => !keep.has(window.sessionID)),
+    options?.maxBackgroundSessions,
+  )
+
+  for (const window of victims) {
+    await killWindow(window.windowID).catch(() => {})
+  }
+
+  return victims
 }
 
 export async function clearWindowSession(windowID: string) {
@@ -237,6 +306,10 @@ export async function selectPane(paneID: string) {
 
 export async function setPaneTitle(paneID: string, title: string) {
   await runTmux(["select-pane", "-t", paneID, "-T", title])
+}
+
+export async function getPaneWindowID(paneID: string) {
+  return runTmux(["display-message", "-p", "-t", paneID, "#{window_id}"])
 }
 
 export async function bindToggleKeys(selectorPaneID: string) {

@@ -5,8 +5,14 @@ import { LauncherService } from "./lib/opencode.js"
 import type { DirectoryRecord, SidebarRow, Snapshot } from "./lib/types.js"
 import { isPrintable, relativeTime, truncate } from "./lib/util.js"
 
-type Mode = "browse" | "search" | "pin"
+type Mode = "browse" | "search" | "add-project"
 type DeleteTarget = {
+  sessionID: string
+  directory: string
+  title: string
+}
+
+type KillTarget = {
   sessionID: string
   directory: string
   title: string
@@ -15,10 +21,10 @@ type DeleteTarget = {
 type BorderColor = React.ComponentProps<typeof Box>["borderColor"]
 type TextColor = React.ComponentProps<typeof Text>["color"]
 
-const service = new LauncherService()
 const SPINNER_FRAMES = ["-", "\\", "|", "/"]
 const LIVE_FRAMES = ["o", "O", "0", "O"]
 const SELECT_FRAMES = [">", "}", "]", "}"]
+const ADD_PROJECT_KEY = "action:add-project"
 
 function rowKey(row: SidebarRow) {
   return row.key
@@ -27,6 +33,9 @@ function rowKey(row: SidebarRow) {
 function rowMatchesQuery(row: SidebarRow, query: string) {
   if (!query) return true
   const lower = query.toLowerCase()
+  if (row.kind === "action") {
+    return row.label.toLowerCase().includes(lower) || row.detail.toLowerCase().includes(lower)
+  }
   if (row.kind === "directory") {
     return (
       row.record.label.toLowerCase().includes(lower) ||
@@ -42,8 +51,20 @@ function rowMatchesQuery(row: SidebarRow, query: string) {
 }
 
 function buildRows(snapshot: Snapshot | null, expanded: Record<string, boolean>, query: string): SidebarRow[] {
-  if (!snapshot) return []
   const rows: SidebarRow[] = []
+  const addProjectRow: SidebarRow = {
+    key: ADD_PROJECT_KEY,
+    kind: "action",
+    action: "add-project",
+    label: "Add project folder",
+    detail: "Enter an absolute or ~/ path",
+  }
+
+  if (rowMatchesQuery(addProjectRow, query)) {
+    rows.push(addProjectRow)
+  }
+
+  if (!snapshot) return rows
   for (const record of snapshot.directories) {
     const matchingSessions = query
       ? record.sessions.filter((session) => rowMatchesQuery({ key: session.id, kind: "session", record, session }, query))
@@ -136,8 +157,14 @@ function metricLine(label: string, value: string, width: number) {
   return truncate(`${label.toUpperCase().padEnd(10)} ${value}`, width)
 }
 
+function sessionJustCompleted(status?: Snapshot["directories"][number]["sessions"][number]["status"]) {
+  return status?.type === "idle" && status.justCompleted === true
+}
+
 function snapshotHasKey(snapshot: Snapshot | null, key?: string) {
-  if (!snapshot || !key) return false
+  if (!key) return false
+  if (key.startsWith("action:")) return key === ADD_PROJECT_KEY
+  if (!snapshot) return false
   if (key.startsWith("dir:")) {
     return snapshot.directories.some((record) => record.directory === key.slice(4))
   }
@@ -184,7 +211,7 @@ function Panel(props: {
   )
 }
 
-export function App() {
+export function App({ service }: { service: LauncherService }) {
   const { exit } = useApp()
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -196,6 +223,7 @@ export function App() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string>()
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>()
+  const [killTarget, setKillTarget] = useState<KillTarget>()
   const [stickyStatusUntil, setStickyStatusUntil] = useState(0)
   const width = process.stdout.columns ?? 100
   const height = process.stdout.rows ?? 24
@@ -208,7 +236,7 @@ export function App() {
   const compactLayout = width < 44 || height < 28
   const panelGap = compactLayout ? 0 : 1
   const showBanner = !compactLayout
-  const panelTextWidth = Math.max(18, width - 8)
+  const panelTextWidth = Math.max(18, width - 4)
   const rows = useMemo(() => buildRows(snapshot, expanded, mode === "search" ? inputValue : ""), [expanded, inputValue, mode, snapshot])
   const selectedIndex = useMemo(() => {
     if (!rows.length) return 0
@@ -219,10 +247,25 @@ export function App() {
   const selectedRow = rows[selectedIndex]
   const previewSession = useMemo(() => findSessionInSnapshot(snapshot, snapshot?.previewSessionID), [snapshot])
 
+  const closeApp = useCallback(async () => {
+    try {
+      await service.shutdown()
+    } catch {
+      // Best-effort cleanup only.
+    }
+    exit()
+  }, [exit])
+
   const setTemporaryStatus = useCallback((message: string) => {
     setStatus(message)
     setStickyStatusUntil(Date.now() + STATUS_MESSAGE_HOLD_MS)
   }, [])
+
+  const beginAddProject = useCallback(() => {
+    setMode("add-project")
+    setInputValue("")
+    setTemporaryStatus("Enter an absolute or ~/ path for the new project folder")
+  }, [setTemporaryStatus])
 
   const refresh = useCallback(
     async (preferredSelectedKey?: string) => {
@@ -246,7 +289,7 @@ export function App() {
         setSelectedKey((current) => {
           if (preferredSelectedKey && snapshotHasKey(next, preferredSelectedKey)) return preferredSelectedKey
           if (current && snapshotHasKey(next, current)) return current
-          return next.directories[0] ? `dir:${next.directories[0].directory}` : undefined
+          return next.directories[0] ? `dir:${next.directories[0].directory}` : ADD_PROJECT_KEY
         })
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause))
@@ -271,11 +314,16 @@ export function App() {
   }, [refresh])
 
   useEffect(() => {
-    if (!deleteTarget) return
-    if (snapshotHasKey(snapshot, `session:${deleteTarget.sessionID}`)) return
-    setDeleteTarget(undefined)
-    setTemporaryStatus("Selected session is already gone")
-  }, [deleteTarget, setTemporaryStatus, snapshot])
+    if (deleteTarget && !snapshotHasKey(snapshot, `session:${deleteTarget.sessionID}`)) {
+      setDeleteTarget(undefined)
+      setTemporaryStatus("Selected session is already gone")
+      return
+    }
+    if (killTarget && !snapshotHasKey(snapshot, `session:${killTarget.sessionID}`)) {
+      setKillTarget(undefined)
+      setTemporaryStatus("Selected session is already gone")
+    }
+  }, [deleteTarget, killTarget, setTemporaryStatus, snapshot])
 
   useEffect(() => {
     if (!rows.length && snapshot?.directories.length) {
@@ -311,11 +359,11 @@ export function App() {
       return
     }
 
-    if (mode === "pin") {
+    if (mode === "add-project") {
       setBusy(`Adding ${value}...`)
       try {
-        const directory = await service.pinDirectory(value)
-        setTemporaryStatus(`Pinned ${directory}`)
+        const directory = await service.addProjectDirectory(value)
+        setTemporaryStatus(`Added project folder ${directory}`)
         setMode("browse")
         setInputValue("")
         await refresh(`dir:${directory}`)
@@ -329,6 +377,10 @@ export function App() {
 
   const openSelection = useCallback(async () => {
     if (!selectedRow) return
+    if (selectedRow.kind === "action") {
+      beginAddProject()
+      return
+    }
     setBusy(selectedRow.kind === "session" ? `Opening ${selectedRow.session.title || "New session"}...` : `Opening ${selectedRow.record.label}...`)
     try {
       const result =
@@ -344,10 +396,14 @@ export function App() {
     } finally {
       setBusy(undefined)
     }
-  }, [refresh, selectedRow, setTemporaryStatus])
+  }, [beginAddProject, refresh, selectedRow, setTemporaryStatus])
 
   const openLatestOrCreate = useCallback(async () => {
     if (!selectedRow) return
+    if (selectedRow.kind === "action") {
+      beginAddProject()
+      return
+    }
     const record = selectedRow.record
     setBusy(`Opening ${record.label}...`)
     try {
@@ -361,10 +417,14 @@ export function App() {
     } finally {
       setBusy(undefined)
     }
-  }, [refresh, selectedRow, setTemporaryStatus])
+  }, [beginAddProject, refresh, selectedRow, setTemporaryStatus])
 
   const createNewSession = useCallback(async () => {
     if (!selectedRow) return
+    if (selectedRow.kind === "action") {
+      beginAddProject()
+      return
+    }
     setBusy(`Creating a new session for ${selectedRow.record.label}...`)
     try {
       const result = await service.openNewSession(selectedRow.record.directory)
@@ -375,10 +435,10 @@ export function App() {
     } finally {
       setBusy(undefined)
     }
-  }, [refresh, selectedRow, setTemporaryStatus])
+  }, [beginAddProject, refresh, selectedRow, setTemporaryStatus])
 
   const unpinSelection = useCallback(async () => {
-    if (!selectedRow || !selectedRow.record.pinned) return
+    if (!selectedRow || selectedRow.kind !== "directory" || !selectedRow.record.pinned) return
     setBusy(`Removing ${selectedRow.record.label} from pins...`)
     try {
       await service.unpinDirectory(selectedRow.record.directory)
@@ -426,6 +486,49 @@ export function App() {
     setTemporaryStatus("Delete cancelled")
   }, [deleteTarget, setTemporaryStatus])
 
+  const requestKillSelection = useCallback(() => {
+    if (!selectedRow || selectedRow.kind !== "session") {
+      setTemporaryStatus("Select a session to kill")
+      return
+    }
+    if (!selectedRow.record.openSessionIDs.has(selectedRow.session.id)) {
+      setTemporaryStatus("Selected session is not currently running")
+      return
+    }
+    setKillTarget({
+      sessionID: selectedRow.session.id,
+      directory: selectedRow.record.directory,
+      title: selectedRow.session.title || "New session",
+    })
+  }, [selectedRow, setTemporaryStatus])
+
+  const confirmKillSelection = useCallback(async () => {
+    if (!killTarget) return
+    const target = killTarget
+    setKillTarget(undefined)
+    setSelectedKey(`session:${target.sessionID}`)
+    setBusy(`Killing ${target.title}...`)
+    try {
+      const killed = await service.killSession(target.sessionID)
+      if (killed) {
+        setTemporaryStatus(`Killed running window for ${target.title}`)
+      } else {
+        setTemporaryStatus(`${target.title} was not running`)
+      }
+      await refresh(`session:${target.sessionID}`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setBusy(undefined)
+    }
+  }, [killTarget, refresh, setTemporaryStatus])
+
+  const cancelKillSelection = useCallback(() => {
+    if (!killTarget) return
+    setKillTarget(undefined)
+    setTemporaryStatus("Kill cancelled")
+  }, [killTarget, setTemporaryStatus])
+
   useInput(
     (input, key) => {
       const loweredInput = input.toLowerCase()
@@ -441,12 +544,25 @@ export function App() {
         return
       }
 
-      if (busy) {
-        if (input === "q" || (key.ctrl && input === "c")) exit()
+      if (killTarget) {
+        if (key.escape || loweredInput === "n") {
+          cancelKillSelection()
+          return
+        }
+        if (key.return || loweredInput === "y") {
+          void confirmKillSelection()
+        }
         return
       }
 
-      if (mode === "search" || mode === "pin") {
+      if (busy) {
+        if (input === "q" || (key.ctrl && input === "c")) {
+          void closeApp()
+        }
+        return
+      }
+
+      if (mode === "search" || mode === "add-project") {
         if (mode === "search") {
           if (key.upArrow) {
             move(-1)
@@ -486,7 +602,7 @@ export function App() {
       }
 
       if (input === "q" || (key.ctrl && input === "c")) {
-        exit()
+        void closeApp()
         return
       }
       if (input === "/") {
@@ -496,9 +612,7 @@ export function App() {
         return
       }
       if (input === "a") {
-        setMode("pin")
-        setInputValue("")
-        setTemporaryStatus("Enter an absolute or ~/ path to pin")
+        beginAddProject()
         return
       }
       if (input === "x") {
@@ -507,6 +621,10 @@ export function App() {
       }
       if (input === "d") {
         requestDeleteSelection()
+        return
+      }
+      if (input === "k") {
+        requestKillSelection()
         return
       }
       if (input === "r") {
@@ -554,6 +672,7 @@ export function App() {
 
   const detail = useMemo(() => {
     if (!selectedRow) return "No project selected"
+    if (selectedRow.kind === "action") return selectedRow.detail
     if (selectedRow.kind === "directory") {
       const active = selectedRow.record.activeSessionIDs.size
       return `${selectedRow.record.sessions.length} sessions${active ? ` | ${active} live` : ""}`
@@ -570,7 +689,8 @@ export function App() {
 
   const bannerTitle = compactLayout ? `:: OPENCODE SIDEBAR :: [${spinner}]` : `:: OPENCODE SIDEBAR v0.1 :: [SYNC ${spinner}]`
   const statusTitle = compactLayout ? `:: OPENCODE SIDEBAR :: [${spinner}]` : `STATUS / MATRIX [${liveGlyph}]`
-  const showToolsPanel = !compactLayout || !deleteTarget
+  const showAddProjectModal = mode === "add-project"
+  const showToolsPanel = !compactLayout || (!deleteTarget && !killTarget)
   const apiState = snapshot ? "CONNECTED" : error ? "DEGRADED" : "BOOTING"
   const statusLines = compactLayout
     ? [
@@ -588,22 +708,34 @@ export function App() {
   const statusMessageLines = wrapText(statusMessageText, panelTextWidth).slice(0, compactLayout ? 1 : 2)
   const toolsLines = wrapText(
     compactLayout
-      ? "[ENT] LOAD  [N] NEW  [D] DEL  [/] FIND  [A] PIN"
-      : "[ENT] LOAD  [N] NEW  [D] DEL  [/] FIND  [A] PIN  [X] UNPIN  [SPC] EXPAND  [R] REFRESH  [Q] QUIT  [ALT-B] LAUNCH  [ALT-]] PREVIEW",
+      ? "[Enter] Load  [N] New  [A] Add  [/] Find"
+      : "[Enter] Load  [N] New  [D] Delete  [K] Kill  [/] Find  [A] Add  [X] Unpin  [Space] Expand  [R] Refresh  [Q] Quit",
     panelTextWidth,
   ).slice(0, compactLayout ? 1 : 3)
+  const addProjectLines = showAddProjectModal
+    ? [
+        truncate(`PATH :: ${inputValue}${inputCursor}`, panelTextWidth),
+        "Paste an absolute path or use ~/ to add a folder to the sidebar.",
+        "[Enter] add folder  [Esc] cancel",
+      ]
+    : []
   const promptPrimary = mode === "search"
     ? `/ ${truncate(inputValue, Math.max(0, panelTextWidth - 4))}${inputCursor}`
-    : mode === "pin"
-      ? `+ ${truncate(inputValue, Math.max(0, panelTextWidth - 4))}${inputCursor}`
-      : truncate(selectedRow?.record.directory ?? "No project selected", panelTextWidth)
-  const promptDetail = mode === "search" || mode === "pin"
+    : truncate(selectedRow?.kind === "action" ? selectedRow.detail : selectedRow?.record.directory ?? "No project selected", panelTextWidth)
+  const promptDetail = mode === "search"
     ? ["[Enter] submit  [Esc] cancel"]
     : wrapText(rows.length > 0 ? `${selectedIndex + 1}/${rows.length}  ${detail}` : `FOCUS ${detail}`, panelTextWidth).slice(0, compactLayout ? 1 : 2)
   const deleteLines = deleteTarget
     ? [
         `Delete session \"${truncate(deleteTarget.title, Math.max(8, panelTextWidth - 18))}\"?`,
         truncate(deleteTarget.directory, panelTextWidth),
+        "[Enter/Y] confirm  [Esc/N] cancel",
+      ]
+    : []
+  const killLines = killTarget
+    ? [
+        `Kill running window for \"${truncate(killTarget.title, Math.max(8, panelTextWidth - 22))}\"?`,
+        truncate(killTarget.directory, panelTextWidth),
         "[Enter/Y] confirm  [Esc/N] cancel",
       ]
     : []
@@ -615,8 +747,10 @@ export function App() {
     (showBanner ? 3 + panelGap : 0) +
     (3 + statusLines.length + statusMessageLines.length + panelGap) +
     (deleteTarget ? 3 + deleteLines.length + panelGap : 0) +
+    (killTarget ? 3 + killLines.length + panelGap : 0) +
+    (showAddProjectModal ? 3 + addProjectLines.length + panelGap : 0) +
     (showToolsPanel ? 3 + toolsLines.length + panelGap : 0) +
-    (3 + promptDetail.length + panelGap) +
+    (mode !== "add-project" ? 3 + promptDetail.length + panelGap : 0) +
     projectPanelStaticHeight
   const visibleRowCount = Math.max(1, height - fixedHeight)
   const visibleRows = useMemo(() => windowRows(rows, selectedIndex, visibleRowCount), [rows, selectedIndex, visibleRowCount])
@@ -656,10 +790,34 @@ export function App() {
         </Box>
       ) : null}
 
+      {killTarget ? (
+        <Box marginTop={panelGap}>
+          <Panel title="KILL / WINDOW / CONFIRM" width={panelTextWidth} borderColor="yellowBright" titleColor="yellowBright">
+            {killLines.map((line, index) => (
+              <Text key={`kill-${index}`} color={index === 2 ? "yellowBright" : "white"}>
+                {truncate(line, panelTextWidth)}
+              </Text>
+            ))}
+          </Panel>
+        </Box>
+      ) : null}
+
+      {showAddProjectModal ? (
+        <Box marginTop={panelGap}>
+          <Panel title="ADD / PROJECT / FOLDER" width={panelTextWidth} borderColor="greenBright" titleColor="greenBright">
+            {addProjectLines.map((line, index) => (
+              <Text key={`add-project-${index}`} color={index === 2 ? "yellowBright" : index === 0 ? "greenBright" : "white"}>
+                {truncate(line, panelTextWidth)}
+              </Text>
+            ))}
+          </Panel>
+        </Box>
+      ) : null}
+
       <Box marginTop={panelGap} flexDirection="column">
         <Text color="gray">{projectHeader}</Text>
         {loading && !snapshot ? <Text color="yellowBright">SYNC :: workspace...</Text> : null}
-        {!rows.length && !loading ? <Text color="gray">No projects yet. Press A to pin a directory.</Text> : null}
+        {!loading && snapshot?.directories.length === 0 ? <Text color="gray">No projects yet. Add a project folder to get started.</Text> : null}
         {visibleRows.map((row, visibleIndex) => {
           const index = firstVisibleIndex + visibleIndex
           const selected = index === selectedIndex
@@ -667,18 +825,13 @@ export function App() {
           const selectedBackground = selected ? "cyan" : undefined
           const rowWidth = panelTextWidth
 
-          if (row.kind === "directory") {
-            const expandedNow = mode === "search" ? true : expanded[row.record.directory] ?? row.record.pinned
-            const activeDirectoryCount = row.record.activeSessionIDs.size
-            const hasPreview = row.record.sessions.some((session) => snapshot?.previewSessionID === session.id)
-            const stateBadge = activeDirectoryCount > 0 ? `[${liveGlyph}]` : hasPreview ? `[>]` : row.record.openSessionIDs.size > 0 ? `[+]` : `[.]`
-            const pinBadge = row.record.pinned ? "[P]" : "[ ]"
-            const suffix = activeDirectoryCount > 0 ? `[${activeDirectoryCount}/${row.record.sessions.length}]` : `[${row.record.sessions.length}]`
-            const label = `${selected ? `[${selectGlyph}]` : "[ ]"} ${expandedNow ? "v" : ">"} ${pinBadge}${stateBadge} ${row.record.label}`
+          if (row.kind === "action") {
+            const suffix = "[ADD]"
+            const label = `${selected ? `[${selectGlyph}]` : "[ ]"} + ${row.label}`
             const availableWidth = Math.max(8, rowWidth - suffix.length - 1)
             return (
               <Box key={row.key} width={rowWidth} justifyContent="space-between">
-                <Text color={selected ? selectedForeground : "cyanBright"} backgroundColor={selectedBackground} bold>
+                <Text color={selected ? selectedForeground : "greenBright"} backgroundColor={selectedBackground} bold>
                   {truncate(label, availableWidth)}
                 </Text>
                 <Text color={selected ? selectedForeground : "gray"} backgroundColor={selectedBackground}>
@@ -688,19 +841,48 @@ export function App() {
             )
           }
 
+          if (row.kind === "directory") {
+            const expandedNow = mode === "search" ? true : expanded[row.record.directory] ?? row.record.pinned
+            const activeDirectoryCount = row.record.activeSessionIDs.size
+            const hasCompleted = row.record.sessions.some((session) => sessionJustCompleted(session.status))
+            const marker = activeDirectoryCount > 0 ? liveGlyph : hasCompleted ? "*" : " "
+            const suffix = activeDirectoryCount > 0 ? `${activeDirectoryCount}/${row.record.sessions.length}` : `${row.record.sessions.length}`
+            const label = `${expandedNow ? "v" : ">"} ${row.record.label}`
+            const availableWidth = Math.max(8, rowWidth - suffix.length - 5)
+            return (
+              <Box key={row.key} width={rowWidth} justifyContent="space-between">
+                <Text color={selected ? selectedForeground : "cyanBright"} backgroundColor={selectedBackground} bold>
+                  {truncate(`${marker} ${label}`, availableWidth)}
+                </Text>
+                <Text color={selected ? selectedForeground : hasCompleted ? "redBright" : "gray"} backgroundColor={selectedBackground}>
+                  {suffix}
+                </Text>
+              </Box>
+            )
+          }
+
           const isActive = row.record.activeSessionIDs.has(row.session.id)
           const isPreview = snapshot?.previewSessionID === row.session.id
-          const sessionBadge = isActive ? `[${liveGlyph}]` : isPreview ? `[>]` : row.record.openSessionIDs.has(row.session.id) ? `[+]` : `[.]`
-          const label = `${selected ? `[${selectGlyph}]` : " | "}-- ${sessionBadge} ${row.session.title || "New session"}`
-          const suffix = `[${relativeTime(row.session.time.updated, now)}]`
+          const completion = sessionJustCompleted(row.session.status)
+          const marker = isActive ? liveGlyph : completion ? "*" : isPreview ? ">" : " "
+          const label = `|-- ${marker} ${row.session.title || "New session"}`
+          const suffix = relativeTime(row.session.time.updated, now)
           const availableWidth = Math.max(8, rowWidth - suffix.length - 1)
-          const color: TextColor = selected ? selectedForeground : isActive ? "greenBright" : isPreview ? "magentaBright" : "white"
+          const color: TextColor = selected
+            ? selectedForeground
+            : completion
+              ? "redBright"
+              : isActive
+                ? "greenBright"
+                : isPreview
+                  ? "magentaBright"
+                  : "white"
           return (
             <Box key={row.key} width={rowWidth} justifyContent="space-between">
               <Text color={color} backgroundColor={selectedBackground}>
                 {truncate(label, availableWidth)}
               </Text>
-              <Text color={selected ? selectedForeground : "gray"} backgroundColor={selectedBackground}>
+              <Text color={selected ? selectedForeground : completion ? "redBright" : "gray"} backgroundColor={selectedBackground}>
                 {suffix}
               </Text>
             </Box>
@@ -721,14 +903,16 @@ export function App() {
         </Box>
       ) : null}
 
-      <Box marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? "gray" : "greenBright"} flexDirection="column" paddingX={1}>
-        <Text color={mode === "browse" ? "white" : "greenBright"}>{truncate(promptPrimary, panelTextWidth)}</Text>
-        {promptDetail.map((line, index) => (
-          <Text key={`prompt-${index}`} color="gray">
-            {truncate(line, panelTextWidth)}
-          </Text>
-        ))}
-      </Box>
+      {mode !== "add-project" ? (
+        <Box marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? "gray" : "greenBright"} flexDirection="column" paddingX={1}>
+          <Text color={mode === "browse" ? "white" : "greenBright"}>{truncate(promptPrimary, panelTextWidth)}</Text>
+          {promptDetail.map((line, index) => (
+            <Text key={`prompt-${index}`} color="gray">
+              {truncate(line, panelTextWidth)}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
     </Box>
   )
 }

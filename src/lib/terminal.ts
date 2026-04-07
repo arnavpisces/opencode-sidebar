@@ -1,11 +1,14 @@
 import type { ActiveSessionRecord, OpenResult, TerminalBackendName } from "./types.js"
 import {
   ensureTmuxLayout,
+  findAnyWindowBySessionID,
   findBackgroundWindowBySessionID,
   getPreviewSessionMeta,
   isTmux,
+  killSessionWindowBySessionID,
   listActiveSessionWindows,
   parkPreviewSession,
+  pruneBackgroundSessions,
   respawnPane,
   setPreviewSession,
   setPaneTitle,
@@ -29,6 +32,22 @@ export function describeTerminalBackend(): TerminalBackendName {
 
 export async function listActiveSessions(): Promise<ActiveSessionRecord[]> {
   return listActiveSessionWindows()
+}
+
+export async function hasRunningSessionWindow(sessionID: string) {
+  return Boolean(await findAnyWindowBySessionID(sessionID))
+}
+
+export async function killSessionWindow(sessionID: string) {
+  return killSessionWindowBySessionID(sessionID)
+}
+
+export async function cleanupSidebarSessions(sessionIDs: Iterable<string>) {
+  const results = [] as boolean[]
+  for (const sessionID of sessionIDs) {
+    results.push(await killSessionWindowBySessionID(sessionID).catch(() => false))
+  }
+  return results
 }
 
 export async function getPreviewSessionID() {
@@ -65,6 +84,9 @@ export async function openSessionWithPreferredTerminal(input: OpenInput): Promis
         title: input.title,
       },
     })
+    await pruneBackgroundSessions({
+      keepSessionIDs: [input.sessionID],
+    })
     return {
       action: "focused",
       sessionID: input.sessionID,
@@ -97,6 +119,9 @@ export async function openSessionWithPreferredTerminal(input: OpenInput): Promis
     directory: input.directory,
     title: input.title,
     paneID: rightPaneID,
+  })
+  await pruneBackgroundSessions({
+    keepSessionIDs: [input.sessionID],
   })
 
   return {

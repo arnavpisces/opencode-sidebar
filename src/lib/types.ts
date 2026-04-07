@@ -14,6 +14,7 @@ export type SessionRecord = {
   id: string
   title: string
   directory: string
+  status?: SessionRuntimeStatus
   time: {
     created: number
     updated: number
@@ -44,6 +45,21 @@ export type ActiveSessionRecord = {
   title: string
   active: boolean
 }
+
+export type SessionRuntimeStatus =
+  | {
+      type: "idle"
+      justCompleted?: boolean
+    }
+  | {
+      type: "busy"
+    }
+  | {
+      type: "retry"
+      attempt: number
+      message: string
+      next: number
+    }
 
 export type DirectoryRecord = {
   directory: string
@@ -78,7 +94,15 @@ export type SessionRow = {
   session: SessionRecord
 }
 
-export type SidebarRow = DirectoryRow | SessionRow
+export type SidebarActionRow = {
+  key: string
+  kind: "action"
+  action: "add-project"
+  label: string
+  detail: string
+}
+
+export type SidebarRow = DirectoryRow | SessionRow | SidebarActionRow
 
 export type OpenResult = {
   action: "focused" | "opened"
