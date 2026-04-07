@@ -263,8 +263,8 @@ export async function getRightPaneID(selectorPaneID: string) {
 
 export async function splitRightPane(selectorPaneID: string, cwd: string) {
   const totalWidth = await getPaneWidth(selectorPaneID)
-  const idealSidebarWidth = 44
-  const minimumSidebarWidth = 30
+  const idealSidebarWidth = 52
+  const minimumSidebarWidth = 36
   const minimumRightWidth = 44
   const sidebarWidth = Math.max(minimumSidebarWidth, Math.min(idealSidebarWidth, totalWidth - minimumRightWidth))
   const rightWidth = Math.max(1, totalWidth - sidebarWidth)

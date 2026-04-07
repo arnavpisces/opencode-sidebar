@@ -10,6 +10,10 @@ const service = new LauncherService()
 let cleanedUp = false
 let renderRevision = 0
 
+function renderApp() {
+  return <App service={service} renderRevision={renderRevision} />
+}
+
 async function cleanup() {
   if (cleanedUp) return
   cleanedUp = true
@@ -69,10 +73,10 @@ process.on("exit", () => {
 
 void startTestControlChannel()
 
-const instance = render(<App service={service} renderRevision={renderRevision} />, { exitOnCtrlC: false })
+const instance = render(renderApp(), { exitOnCtrlC: false })
 
 process.stdout.on("resize", () => {
   renderRevision += 1
   instance.clear()
-  instance.rerender(<App service={service} renderRevision={renderRevision} />)
+  instance.rerender(renderApp())
 })

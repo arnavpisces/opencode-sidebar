@@ -224,9 +224,14 @@ function Panel(props: {
   )
 }
 
-export function App({ service, renderRevision }: { service: LauncherService; renderRevision: number }) {
+export function App({
+  service,
+  renderRevision,
+}: {
+  service: LauncherService
+  renderRevision: number
+}) {
   const { exit } = useApp()
-  const { stdout } = useStdout()
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [selectedKey, setSelectedKey] = useState<string>()
@@ -735,9 +740,7 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
   const statusMessageText = error ? `STATE      ERROR :: ${error}` : busy ? `STATE      WORK :: ${busy} [${spinner}]` : `STATE      LINK :: ${status}`
   const statusMessageLines = wrapTextHard(statusMessageText, panelTextWidth)
   const toolsLines = wrapTextHard(
-    compactLayout
-      ? "[Enter] Load  [N] New  [A] Add  [/] Find"
-      : "[Enter] Load  [N] New  [D] Delete  [K] Kill  [/] Find  [A] Add  [X] Unpin  [Space] Expand  [R] Refresh  [Q] Quit",
+    "[Enter] Load  [N] New  [D] Delete  [K] Kill  [/] Find  [A] Add  [X] Unpin  [Space] Expand  [R] Refresh  [Q] Quit  [Alt-b] Sidebar  [Alt-]] Preview",
     panelTextWidth,
   )
   const addProjectLines = showAddProjectModal
@@ -768,8 +771,8 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
         "[Enter/Y] confirm  [Esc/N] cancel",
       ]
     : []
-  const projectHeader = sectionRule(rows.length ? `PROJECT MATRIX ${selectedIndex + 1}/${rows.length}` : "PROJECT MATRIX", panelTextWidth)
-  const projectFooter = rows.length > 0 ? truncate(`FOCUS :: ${selectedIndex + 1}/${rows.length} :: ${detail}`, panelTextWidth) : truncate(`FOCUS :: ${detail}`, panelTextWidth)
+  const projectHeader = sectionRule(rows.length ? `PROJECT MATRIX ${selectedIndex + 1}/${rows.length}` : "PROJECT MATRIX", sectionTextWidth)
+  const projectFooter = rows.length > 0 ? truncate(`FOCUS :: ${selectedIndex + 1}/${rows.length} :: ${detail}`, sectionTextWidth) : truncate(`FOCUS :: ${detail}`, sectionTextWidth)
 
   const projectPanelStaticHeight = 2 + (loading && !snapshot ? 1 : 0) + (!rows.length && !loading ? 1 : 0)
   const fixedHeight =
@@ -852,7 +855,7 @@ export function App({ service, renderRevision }: { service: LauncherService; ren
           const selected = index === selectedIndex
           const selectedForeground: TextColor = selected ? "black" : undefined
           const selectedBackground = selected ? "cyan" : undefined
-          const rowWidth = panelTextWidth
+          const rowWidth = sectionTextWidth
 
           if (row.kind === "action") {
             const suffix = "[ADD]"
