@@ -83,3 +83,60 @@ export function sleep(ms: number) {
 export function isPrintable(input: string) {
   return input.length === 1 && input >= " " && input !== "\u007f"
 }
+
+export function sanitizePastedText(input: string) {
+  return input.replace(/[\r\n]+/g, "").replace(/\t+/g, " ")
+}
+
+export function wrapTextHard(input: string, width: number) {
+  if (width <= 0) return [] as string[]
+  if (!input) return [""]
+
+  const lines: string[] = []
+  for (const paragraph of input.split(/\r?\n/)) {
+    if (!paragraph) {
+      lines.push("")
+      continue
+    }
+
+    const words = paragraph.split(/\s+/).filter(Boolean)
+    let current = ""
+
+    const pushChunk = (chunk: string) => {
+      if (!chunk) return
+      lines.push(chunk)
+    }
+
+    for (const word of words) {
+      if (word.length > width) {
+        if (current) {
+          lines.push(current)
+          current = ""
+        }
+        for (let index = 0; index < word.length; index += width) {
+          pushChunk(word.slice(index, index + width))
+        }
+        continue
+      }
+
+      if (!current) {
+        current = word
+        continue
+      }
+
+      const next = `${current} ${word}`
+      if (next.length <= width) {
+        current = next
+      } else {
+        lines.push(current)
+        current = word
+      }
+    }
+
+    if (current) {
+      lines.push(current)
+    }
+  }
+
+  return lines.length ? lines : [""]
+}

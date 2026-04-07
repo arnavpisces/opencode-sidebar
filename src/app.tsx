@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react"
-import { Box, Text, useApp, useInput } from "ink"
+import { Box, Text, useApp, useInput, useStdout } from "ink"
 import { STATUS_MESSAGE_HOLD_MS, WINDOW_POLL_INTERVAL_MS } from "./lib/constants.js"
 import { LauncherService } from "./lib/opencode.js"
 import type { DirectoryRecord, SidebarRow, Snapshot } from "./lib/types.js"
-import { isPrintable, relativeTime, truncate } from "./lib/util.js"
+import { isPrintable, relativeTime, sanitizePastedText, truncate, wrapTextHard } from "./lib/util.js"
 
 type Mode = "browse" | "search" | "add-project"
 type DeleteTarget = {
@@ -113,6 +113,33 @@ function useFrame(intervalMs: number) {
   return value
 }
 
+function useTerminalSize() {
+  const { stdout } = useStdout()
+  const [size, setSize] = useState(() => ({
+    width: stdout?.columns ?? 100,
+    height: stdout?.rows ?? 24,
+  }))
+
+  useEffect(() => {
+    if (!stdout) return
+
+    const update = () => {
+      setSize({
+        width: stdout.columns ?? 100,
+        height: stdout.rows ?? 24,
+      })
+    }
+
+    update()
+    stdout.on("resize", update)
+    return () => {
+      stdout.off("resize", update)
+    }
+  }, [stdout])
+
+  return size
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
 }
@@ -123,28 +150,6 @@ function windowRows<T>(rows: T[], selectedIndex: number, limit: number) {
   const before = Math.floor(limit / 3)
   const start = clamp(selectedIndex - before, 0, Math.max(0, rows.length - limit))
   return rows.slice(start, start + limit)
-}
-
-function wrapText(input: string, width: number) {
-  if (width <= 0) return [] as string[]
-  const words = input.split(/\s+/).filter(Boolean)
-  if (!words.length) return [""]
-  const lines: string[] = []
-  let current = ""
-  for (const word of words) {
-    if (!current) {
-      current = word
-      continue
-    }
-    if (`${current} ${word}`.length <= width) {
-      current += ` ${word}`
-      continue
-    }
-    lines.push(current)
-    current = word
-  }
-  if (current) lines.push(current)
-  return lines
 }
 
 function sectionRule(title: string, width: number) {
@@ -159,6 +164,10 @@ function metricLine(label: string, value: string, width: number) {
 
 function sessionJustCompleted(status?: Snapshot["directories"][number]["sessions"][number]["status"]) {
   return status?.type === "idle" && status.justCompleted === true
+}
+
+function sessionIsWorking(status?: Snapshot["directories"][number]["sessions"][number]["status"]) {
+  return status?.type === "busy" || status?.type === "retry"
 }
 
 function snapshotHasKey(snapshot: Snapshot | null, key?: string) {
@@ -211,8 +220,9 @@ function Panel(props: {
   )
 }
 
-export function App({ service }: { service: LauncherService }) {
+export function App({ service, renderRevision }: { service: LauncherService; renderRevision: number }) {
   const { exit } = useApp()
+  const { stdout } = useStdout()
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [selectedKey, setSelectedKey] = useState<string>()
@@ -225,8 +235,7 @@ export function App({ service }: { service: LauncherService }) {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>()
   const [killTarget, setKillTarget] = useState<KillTarget>()
   const [stickyStatusUntil, setStickyStatusUntil] = useState(0)
-  const width = process.stdout.columns ?? 100
-  const height = process.stdout.rows ?? 24
+  const { width, height } = useTerminalSize()
   const now = useNowTick()
   const frame = useFrame(160)
   const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length]
@@ -532,6 +541,12 @@ export function App({ service }: { service: LauncherService }) {
   useInput(
     (input, key) => {
       const loweredInput = input.toLowerCase()
+      const isInterrupt = input === "\u0003" || (key.ctrl && input === "c")
+
+      if (isInterrupt) {
+        void closeApp()
+        return
+      }
 
       if (deleteTarget) {
         if (key.escape || loweredInput === "n") {
@@ -556,7 +571,7 @@ export function App({ service }: { service: LauncherService }) {
       }
 
       if (busy) {
-        if (input === "q" || (key.ctrl && input === "c")) {
+        if (input === "q") {
           void closeApp()
         }
         return
@@ -595,13 +610,18 @@ export function App({ service }: { service: LauncherService }) {
           setInputValue((current) => current.slice(0, -1))
           return
         }
+        const pasted = sanitizePastedText(input)
+        if (pasted && !key.ctrl && !key.meta) {
+          setInputValue((current) => current + pasted)
+          return
+        }
         if (isPrintable(input)) {
           setInputValue((current) => current + input)
         }
         return
       }
 
-      if (input === "q" || (key.ctrl && input === "c")) {
+      if (input === "q") {
         void closeApp()
         return
       }
@@ -669,6 +689,7 @@ export function App({ service }: { service: LauncherService }) {
   const directoryCount = snapshot?.directories.length ?? 0
   const sessionCount = snapshot?.directories.reduce((count, record) => count + record.sessions.length, 0) ?? 0
   const activeCount = snapshot?.activeSessions.length ?? 0
+  const hasWorkingSessions = snapshot?.directories.some((record) => record.sessions.some((session) => sessionIsWorking(session.status))) ?? false
 
   const detail = useMemo(() => {
     if (!selectedRow) return "No project selected"
@@ -688,7 +709,8 @@ export function App({ service }: { service: LauncherService }) {
   }, [compactLayout, panelTextWidth, previewSession])
 
   const bannerTitle = compactLayout ? `:: OPENCODE SIDEBAR :: [${spinner}]` : `:: OPENCODE SIDEBAR v0.1 :: [SYNC ${spinner}]`
-  const statusTitle = compactLayout ? `:: OPENCODE SIDEBAR :: [${spinner}]` : `STATUS / MATRIX [${liveGlyph}]`
+  const activityGlyph = hasWorkingSessions ? liveGlyph : activeCount > 0 ? "|" : "."
+  const statusTitle = compactLayout ? `:: OPENCODE SIDEBAR :: [${spinner}]` : `STATUS / MATRIX [${activityGlyph}]`
   const showAddProjectModal = mode === "add-project"
   const showToolsPanel = !compactLayout || (!deleteTarget && !killTarget)
   const apiState = snapshot ? "CONNECTED" : error ? "DEGRADED" : "BOOTING"
@@ -705,26 +727,27 @@ export function App({ service }: { service: LauncherService }) {
         metricLine("workspace", `[${directoryCount} D | ${sessionCount} S | ${activeCount} LIVE]`, panelTextWidth),
       ]
   const statusMessageText = error ? `STATE      ERROR :: ${error}` : busy ? `STATE      WORK :: ${busy} [${spinner}]` : `STATE      LINK :: ${status}`
-  const statusMessageLines = wrapText(statusMessageText, panelTextWidth).slice(0, compactLayout ? 1 : 2)
-  const toolsLines = wrapText(
+  const statusMessageLines = wrapTextHard(statusMessageText, panelTextWidth)
+  const toolsLines = wrapTextHard(
     compactLayout
       ? "[Enter] Load  [N] New  [A] Add  [/] Find"
       : "[Enter] Load  [N] New  [D] Delete  [K] Kill  [/] Find  [A] Add  [X] Unpin  [Space] Expand  [R] Refresh  [Q] Quit",
-    panelTextWidth,
-  ).slice(0, compactLayout ? 1 : 3)
+    Math.max(18, panelTextWidth - 2),
+  )
   const addProjectLines = showAddProjectModal
     ? [
-        truncate(`PATH :: ${inputValue}${inputCursor}`, panelTextWidth),
-        "Paste an absolute path or use ~/ to add a folder to the sidebar.",
-        "[Enter] add folder  [Esc] cancel",
+        ...wrapTextHard(`Path :: ${inputValue}${inputCursor}`, panelTextWidth),
+        ...wrapTextHard("Paste an absolute path or use ~/ to add a folder to the sidebar.", panelTextWidth),
+        ...wrapTextHard("[Enter] Add folder  [Esc] Cancel", panelTextWidth),
       ]
     : []
   const promptPrimary = mode === "search"
-    ? `/ ${truncate(inputValue, Math.max(0, panelTextWidth - 4))}${inputCursor}`
-    : truncate(selectedRow?.kind === "action" ? selectedRow.detail : selectedRow?.record.directory ?? "No project selected", panelTextWidth)
+    ? `/ ${inputValue}${inputCursor}`
+    : selectedRow?.kind === "action" ? selectedRow.detail : selectedRow?.record.directory ?? "No project selected"
+  const promptPrimaryLines = wrapTextHard(promptPrimary, panelTextWidth)
   const promptDetail = mode === "search"
     ? ["[Enter] submit  [Esc] cancel"]
-    : wrapText(rows.length > 0 ? `${selectedIndex + 1}/${rows.length}  ${detail}` : `FOCUS ${detail}`, panelTextWidth).slice(0, compactLayout ? 1 : 2)
+    : wrapTextHard(rows.length > 0 ? `${selectedIndex + 1}/${rows.length}  ${detail}` : `FOCUS ${detail}`, panelTextWidth)
   const deleteLines = deleteTarget
     ? [
         `Delete session \"${truncate(deleteTarget.title, Math.max(8, panelTextWidth - 18))}\"?`,
@@ -750,7 +773,7 @@ export function App({ service }: { service: LauncherService }) {
     (killTarget ? 3 + killLines.length + panelGap : 0) +
     (showAddProjectModal ? 3 + addProjectLines.length + panelGap : 0) +
     (showToolsPanel ? 3 + toolsLines.length + panelGap : 0) +
-    (mode !== "add-project" ? 3 + promptDetail.length + panelGap : 0) +
+    (mode !== "add-project" ? 3 + promptPrimaryLines.length + promptDetail.length + panelGap : 0) +
     projectPanelStaticHeight
   const visibleRowCount = Math.max(1, height - fixedHeight)
   const visibleRows = useMemo(() => windowRows(rows, selectedIndex, visibleRowCount), [rows, selectedIndex, visibleRowCount])
@@ -760,7 +783,7 @@ export function App({ service }: { service: LauncherService }) {
   }, [rows, visibleRows])
 
   return (
-    <Box flexDirection="column" paddingX={1} paddingTop={1}>
+    <Box key={`${width}x${height}:${renderRevision}`} flexDirection="column" width={width} height={height} paddingX={1} paddingTop={1}>
       {showBanner ? <Panel title={bannerTitle} width={panelTextWidth} borderColor="cyan" titleColor="cyanBright" /> : null}
 
       <Box marginTop={panelGap}>
@@ -807,7 +830,7 @@ export function App({ service }: { service: LauncherService }) {
           <Panel title="ADD / PROJECT / FOLDER" width={panelTextWidth} borderColor="greenBright" titleColor="greenBright">
             {addProjectLines.map((line, index) => (
               <Text key={`add-project-${index}`} color={index === 2 ? "yellowBright" : index === 0 ? "greenBright" : "white"}>
-                {truncate(line, panelTextWidth)}
+                {line}
               </Text>
             ))}
           </Panel>
@@ -844,8 +867,9 @@ export function App({ service }: { service: LauncherService }) {
           if (row.kind === "directory") {
             const expandedNow = mode === "search" ? true : expanded[row.record.directory] ?? row.record.pinned
             const activeDirectoryCount = row.record.activeSessionIDs.size
+            const hasWorkingSession = row.record.sessions.some((session) => sessionIsWorking(session.status))
             const hasCompleted = row.record.sessions.some((session) => sessionJustCompleted(session.status))
-            const marker = activeDirectoryCount > 0 ? liveGlyph : hasCompleted ? "*" : " "
+            const marker = hasWorkingSession ? liveGlyph : activeDirectoryCount > 0 ? "|" : hasCompleted ? "*" : " "
             const suffix = activeDirectoryCount > 0 ? `${activeDirectoryCount}/${row.record.sessions.length}` : `${row.record.sessions.length}`
             const label = `${expandedNow ? "v" : ">"} ${row.record.label}`
             const availableWidth = Math.max(8, rowWidth - suffix.length - 5)
@@ -863,8 +887,9 @@ export function App({ service }: { service: LauncherService }) {
 
           const isActive = row.record.activeSessionIDs.has(row.session.id)
           const isPreview = snapshot?.previewSessionID === row.session.id
+          const isWorking = sessionIsWorking(row.session.status)
           const completion = sessionJustCompleted(row.session.status)
-          const marker = isActive ? liveGlyph : completion ? "*" : isPreview ? ">" : " "
+          const marker = isWorking ? liveGlyph : completion ? "*" : isPreview ? ">" : isActive ? "|" : " "
           const label = `|-- ${marker} ${row.session.title || "New session"}`
           const suffix = relativeTime(row.session.time.updated, now)
           const availableWidth = Math.max(8, rowWidth - suffix.length - 1)
@@ -872,7 +897,7 @@ export function App({ service }: { service: LauncherService }) {
             ? selectedForeground
             : completion
               ? "redBright"
-              : isActive
+              : isWorking || isActive
                 ? "greenBright"
                 : isPreview
                   ? "magentaBright"
@@ -896,7 +921,7 @@ export function App({ service }: { service: LauncherService }) {
           <Panel title="TOOLS / MODES" width={panelTextWidth}>
             {toolsLines.map((line, index) => (
               <Text key={`tool-${index}`} color="gray">
-                {truncate(line, panelTextWidth)}
+                {line}
               </Text>
             ))}
           </Panel>
@@ -905,10 +930,14 @@ export function App({ service }: { service: LauncherService }) {
 
       {mode !== "add-project" ? (
         <Box marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? "gray" : "greenBright"} flexDirection="column" paddingX={1}>
-          <Text color={mode === "browse" ? "white" : "greenBright"}>{truncate(promptPrimary, panelTextWidth)}</Text>
+          {promptPrimaryLines.map((line, index) => (
+            <Text key={`prompt-primary-${index}`} color={mode === "browse" ? "white" : "greenBright"}>
+              {line}
+            </Text>
+          ))}
           {promptDetail.map((line, index) => (
             <Text key={`prompt-${index}`} color="gray">
-              {truncate(line, panelTextWidth)}
+              {line}
             </Text>
           ))}
         </Box>

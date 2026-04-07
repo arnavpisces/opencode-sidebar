@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { relativeTime, sessionWorkspace, sessionWindowTitle, truncate } from "../src/lib/util.js"
+import { relativeTime, sessionWorkspace, sessionWindowTitle, truncate, wrapTextHard } from "../src/lib/util.js"
 
 describe("util helpers", () => {
   test("relativeTime uses compact units", () => {
@@ -19,5 +19,15 @@ describe("util helpers", () => {
 
   test("truncate adds ellipsis", () => {
     expect(truncate("abcdef", 4)).toBe("abc…")
+  })
+
+  test("wrapTextHard wraps long tokens without dropping content", () => {
+    expect(wrapTextHard("/Users/arnavpisces/Desktop/Personal/really-long-folder-name", 12)).toEqual([
+      "/Users/arnav",
+      "pisces/Deskt",
+      "op/Personal/",
+      "really-long-",
+      "folder-name",
+    ])
   })
 })
