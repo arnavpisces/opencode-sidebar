@@ -25,6 +25,11 @@ const SPINNER_FRAMES = ["-", "\\", "|", "/"]
 const LIVE_FRAMES = ["o", "O", "0", "O"]
 const SELECT_FRAMES = [">", "}", "]", "}"]
 const ADD_PROJECT_KEY = "action:add-project"
+const HAPPY_BREATHING_FACES = ["(◕ᴥ◕)", "(◕ᴗ◕)"]
+const SUPER_HAPPY_FACE = "(◕‿◕)"
+const SLEEPING_FACE = "(-ᴥ-)"
+const SAD_FACE = "(◕︵◕)"
+const UNWELL_FACE = "(@_@)"
 
 function rowKey(row: SidebarRow) {
   return row.key
@@ -206,6 +211,47 @@ function describeOpenResult(result: { backend?: string; action: "focused" | "ope
   return result.action === "focused" ? `Focused existing ${result.backend} window` : `Opened new ${result.backend} window`
 }
 
+function mascotTitle(input: {
+  compact: boolean
+  width: number
+  frame: number
+  busy: boolean
+  activeCount: number
+  error?: string
+  mode: Mode
+}) {
+  const attentionNeeded = Boolean(input.error) || input.mode === "add-project"
+  const face = input.error
+    ? UNWELL_FACE
+    : attentionNeeded
+      ? SAD_FACE
+      : input.busy
+        ? SUPER_HAPPY_FACE
+        : input.activeCount > 0
+          ? HAPPY_BREATHING_FACES[input.frame % HAPPY_BREATHING_FACES.length]
+          : SLEEPING_FACE
+
+  const mood = input.error
+    ? "Not feeling great"
+    : attentionNeeded
+      ? "Needs attention"
+      : input.busy
+        ? "Super happy"
+        : input.activeCount > 0
+          ? "Happy and breathing"
+          : "Sleeping"
+
+  const syncBadge = `[SYNC ${SPINNER_FRAMES[input.frame % SPINNER_FRAMES.length]}]`
+  const wideTitle = `:: OPENCODE SIDEBAR v0.1 :: ${face} ${mood} :: ${syncBadge}`
+  const compactTitle = `:: OPENCODE SIDEBAR :: ${face} ${syncBadge}`
+
+  if (input.compact) return compactTitle
+  if (wideTitle.length <= input.width) return wideTitle
+  const mediumTitle = `:: OPENCODE SIDEBAR v0.1 :: ${face} :: ${syncBadge}`
+  if (mediumTitle.length <= input.width) return mediumTitle
+  return compactTitle
+}
+
 function Panel(props: {
   title: string
   width: number
@@ -251,9 +297,9 @@ export function App({
   const liveGlyph = LIVE_FRAMES[frame % LIVE_FRAMES.length]
   const selectGlyph = SELECT_FRAMES[frame % SELECT_FRAMES.length]
   const inputCursor = frame % 2 === 0 ? "_" : " "
-  const compactLayout = width < 44 || height < 28
+  const compactLayout = width < 38 || height < 28
   const panelGap = compactLayout ? 0 : 1
-  const showBanner = !compactLayout
+  const showBanner = height >= 12
   const panelOuterWidth = minimumWidth(width - 2)
   const panelTextWidth = minimumWidth(panelOuterWidth - 4)
   const sectionTextWidth = minimumWidth(width - 2)
@@ -719,9 +765,17 @@ export function App({
     return truncate(label, compactLayout ? panelTextWidth : minimumWidth(panelTextWidth - 16))
   }, [compactLayout, panelTextWidth, previewSession])
 
-  const bannerTitle = compactLayout ? `:: OPENCODE SIDEBAR :: [${spinner}]` : `:: OPENCODE SIDEBAR v0.1 :: [SYNC ${spinner}]`
+  const bannerTitle = mascotTitle({
+    compact: compactLayout,
+    width: panelTextWidth,
+    frame,
+    busy: hasWorkingSessions,
+    activeCount,
+    error,
+    mode,
+  })
   const activityGlyph = hasWorkingSessions ? liveGlyph : activeCount > 0 ? "|" : "."
-  const statusTitle = compactLayout ? `:: OPENCODE SIDEBAR :: [${spinner}]` : `STATUS / MATRIX [${activityGlyph}]`
+  const statusTitle = `STATUS / MATRIX [${activityGlyph}]`
   const showAddProjectModal = mode === "add-project"
   const showToolsPanel = !compactLayout || (!deleteTarget && !killTarget)
   const apiState = snapshot ? "CONNECTED" : error ? "DEGRADED" : "BOOTING"
