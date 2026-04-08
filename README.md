@@ -38,6 +38,8 @@ bun install
 
 ## Usage
 
+![OpenCode Sidebar screenshot](./screenshot.jpg)
+
 ### Shortcuts
 
 - `↑` / `↓`: move
