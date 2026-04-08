@@ -3,7 +3,15 @@ import { spawn } from "node:child_process"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
-import { DEFAULT_PORT, SERVER_HOST, SERVER_LOG_FILE, SESSION_PAGE_LIMIT, SNAPSHOT_DEBOUNCE_MS } from "./constants.js"
+import {
+  DEFAULT_PORT,
+  PRIVATE_DIRECTORY_MODE,
+  PRIVATE_FILE_MODE,
+  SERVER_HOST,
+  SERVER_LOG_FILE,
+  SESSION_PAGE_LIMIT,
+  SNAPSHOT_DEBOUNCE_MS,
+} from "./constants.js"
 import { buildSnapshot } from "./model.js"
 import { SoundNotifier } from "./notifications.js"
 import { loadState, saveState, updateState } from "./state.js"
@@ -18,6 +26,11 @@ import {
 } from "./terminal.js"
 
 type OpencodeClient = ReturnType<typeof createOpencodeClient>
+type ReadyState = {
+  client: OpencodeClient
+  baseUrl: string
+  port: number
+}
 const RECENT_COMPLETION_WINDOW_MS = 5 * 60_000
 
 async function isHealthy(port: number) {
@@ -50,8 +63,10 @@ async function nextFreePort(start: number) {
 }
 
 async function startDetachedServer(port: number) {
-  await fs.mkdir(path.dirname(SERVER_LOG_FILE), { recursive: true })
-  const handle = await fs.open(SERVER_LOG_FILE, "a")
+  await fs.mkdir(path.dirname(SERVER_LOG_FILE), { recursive: true, mode: PRIVATE_DIRECTORY_MODE })
+  await fs.chmod(path.dirname(SERVER_LOG_FILE), PRIVATE_DIRECTORY_MODE).catch(() => {})
+  const handle = await fs.open(SERVER_LOG_FILE, "a", PRIVATE_FILE_MODE)
+  await fs.chmod(SERVER_LOG_FILE, PRIVATE_FILE_MODE).catch(() => {})
   const child = spawn(
     "opencode",
     ["serve", "--hostname", SERVER_HOST, "--port", String(port)],
@@ -161,10 +176,12 @@ export class LauncherService {
   private client?: OpencodeClient
   private baseUrl?: string
   private port?: number
+  private readyPromise?: Promise<ReadyState>
+  private snapshotPromise?: Promise<Snapshot>
   private readonly launchedSessionIDs = new Set<string>()
   private readonly notifier = new SoundNotifier()
 
-  async ensureReady() {
+  async ensureReady(): Promise<ReadyState> {
     if (this.client && this.baseUrl && this.port && (await isHealthy(this.port))) {
       return {
         client: this.client,
@@ -173,56 +190,80 @@ export class LauncherService {
       }
     }
 
-    this.client = undefined
-    this.baseUrl = undefined
-    this.port = undefined
+    if (this.readyPromise) {
+      return this.readyPromise
+    }
 
-    const port = await ensureServerPort()
-    const baseUrl = `http://${SERVER_HOST}:${port}`
-    const client = createOpencodeClient({ baseUrl })
+    this.readyPromise = (async () => {
+      this.client = undefined
+      this.baseUrl = undefined
+      this.port = undefined
 
-    this.client = client
-    this.baseUrl = baseUrl
-    this.port = port
+      const port = await ensureServerPort()
+      const baseUrl = `http://${SERVER_HOST}:${port}`
+      const client = createOpencodeClient({ baseUrl })
 
-    return {
-      client,
-      baseUrl,
-      port,
+      this.client = client
+      this.baseUrl = baseUrl
+      this.port = port
+
+      return {
+        client,
+        baseUrl,
+        port,
+      }
+    })()
+
+    try {
+      return await this.readyPromise
+    } finally {
+      this.readyPromise = undefined
     }
   }
 
   async getSnapshot(): Promise<Snapshot> {
-    const [{ client, baseUrl, port }, state, activeSessions, previewSessionID] = await Promise.all([
-      this.ensureReady(),
-      loadState(),
-      listActiveSessions(),
-      getPreviewSessionID(),
-    ])
-    const [projects, sessions, statuses, questions, permissions] = await Promise.all([
-      fetchProjects(client),
-      fetchAllSessions(client),
-      fetchSessionStatuses(client),
-      fetchPendingQuestions(client),
-      fetchPendingPermissions(client),
-    ])
+    if (this.snapshotPromise) {
+      return this.snapshotPromise
+    }
 
-    const snapshot = buildSnapshot({
-      baseUrl,
-      serverPort: port,
-      projects,
-      sessions: mergeSessionStatuses(sessions, statuses),
-      pinnedDirectories: state.pinnedDirectories,
-      panes: [],
-      activeSessions,
-      previewSessionID,
-    })
-    this.notifier.syncSnapshot(snapshot)
-    this.notifier.syncPendingRequests({
-      questions,
-      permissions,
-    })
-    return snapshot
+    this.snapshotPromise = (async () => {
+      const [{ client, baseUrl, port }, state, activeSessions, previewSessionID] = await Promise.all([
+        this.ensureReady(),
+        loadState(),
+        listActiveSessions(),
+        getPreviewSessionID(),
+      ])
+      const [projects, sessions, statuses, questions, permissions] = await Promise.all([
+        fetchProjects(client),
+        fetchAllSessions(client),
+        fetchSessionStatuses(client),
+        fetchPendingQuestions(client),
+        fetchPendingPermissions(client),
+      ])
+
+      const snapshot = buildSnapshot({
+        baseUrl,
+        serverPort: port,
+        projects,
+        sessions: mergeSessionStatuses(sessions, statuses),
+        pinnedDirectories: state.pinnedDirectories,
+        panes: [],
+        activeSessions,
+        previewSessionID,
+      })
+      this.notifier.syncSnapshot(snapshot)
+      this.notifier.syncPendingRequests({
+        questions,
+        permissions,
+      })
+      return snapshot
+    })()
+
+    try {
+      return await this.snapshotPromise
+    } finally {
+      this.snapshotPromise = undefined
+    }
   }
 
   async addProjectDirectory(rawDirectory: string) {
@@ -308,10 +349,21 @@ export class LauncherService {
   }
 
   async shutdown() {
+    const launchedSessionIDs = [...this.launchedSessionIDs]
     const results = [] as boolean[]
-    for (const sessionID of this.launchedSessionIDs) {
+    for (const sessionID of launchedSessionIDs) {
       results.push(await killSessionWindow(sessionID).catch(() => false))
     }
+
+    const deadline = Date.now() + 3_000
+    while (Date.now() < deadline) {
+      const activeSessionIDs = new Set((await listActiveSessions().catch(() => [])).map((session) => session.sessionID))
+      if (launchedSessionIDs.every((sessionID) => !activeSessionIDs.has(sessionID))) {
+        break
+      }
+      await sleep(100)
+    }
+
     this.launchedSessionIDs.clear()
     return results
   }
@@ -321,8 +373,18 @@ export class LauncherService {
     let timer: ReturnType<typeof setTimeout> | undefined
     const invalidate = () => {
       if (timer) clearTimeout(timer)
-      timer = setTimeout(onInvalidate, SNAPSHOT_DEBOUNCE_MS)
+      timer = setTimeout(() => {
+        if (!signal.aborted) onInvalidate()
+      }, SNAPSHOT_DEBOUNCE_MS)
     }
+
+    signal.addEventListener(
+      "abort",
+      () => {
+        if (timer) clearTimeout(timer)
+      },
+      { once: true },
+    )
 
     ;(async () => {
       while (!signal.aborted) {

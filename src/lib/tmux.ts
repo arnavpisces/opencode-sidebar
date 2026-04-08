@@ -214,6 +214,17 @@ export async function clearWindowSession(windowID: string) {
   await runTmux(["set-option", "-u", "-w", "-t", windowID, TITLE_OPTION]).catch(() => {})
 }
 
+export async function setPaneSession(input: {
+  paneID: string
+  sessionID: string
+  directory: string
+  title: string
+}) {
+  await runTmux(["set-option", "-p", "-t", input.paneID, SESSION_OPTION, input.sessionID]).catch(() => {})
+  await runTmux(["set-option", "-p", "-t", input.paneID, DIRECTORY_OPTION, input.directory]).catch(() => {})
+  await runTmux(["set-option", "-p", "-t", input.paneID, TITLE_OPTION, input.title]).catch(() => {})
+}
+
 export async function getRightPaneID(selectorPaneID: string) {
   if (cachedRightPaneID) {
     const all = await runTmux(["list-panes", "-a", "-F", "#{pane_id}"]).catch(() => "")
@@ -356,6 +367,12 @@ export async function swapPreviewWithSessionPane(input: {
   await setPreviewSession({
     ...input.nextSession,
     paneID: input.sessionPaneID,
+  })
+  await setPaneSession({
+    paneID: input.sessionPaneID,
+    sessionID: input.nextSession.sessionID,
+    directory: input.nextSession.directory,
+    title: input.nextSession.title,
   })
   const launcherWindowID = await getCurrentWindowID()
   await clearWindowSession(launcherWindowID)

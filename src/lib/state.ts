@@ -1,5 +1,5 @@
 import fs from "node:fs/promises"
-import { APP_DIR, DEFAULT_PORT, STATE_FILE } from "./constants.js"
+import { APP_DIR, DEFAULT_PORT, PRIVATE_DIRECTORY_MODE, PRIVATE_FILE_MODE, STATE_FILE } from "./constants.js"
 import type { PersistedState } from "./types.js"
 import { distinct } from "./util.js"
 
@@ -9,7 +9,8 @@ const DEFAULT_STATE: PersistedState = {
 }
 
 async function ensureAppDir() {
-  await fs.mkdir(APP_DIR, { recursive: true })
+  await fs.mkdir(APP_DIR, { recursive: true, mode: PRIVATE_DIRECTORY_MODE })
+  await fs.chmod(APP_DIR, PRIVATE_DIRECTORY_MODE).catch(() => {})
 }
 
 export async function loadState(): Promise<PersistedState> {
@@ -32,7 +33,11 @@ export async function saveState(state: PersistedState) {
     serverPort: state.serverPort,
     pinnedDirectories: distinct(state.pinnedDirectories),
   }
-  await fs.writeFile(STATE_FILE, JSON.stringify(normalized, null, 2) + "\n", "utf8")
+  await fs.writeFile(STATE_FILE, JSON.stringify(normalized, null, 2) + "\n", {
+    encoding: "utf8",
+    mode: PRIVATE_FILE_MODE,
+  })
+  await fs.chmod(STATE_FILE, PRIVATE_FILE_MODE).catch(() => {})
 }
 
 export async function updateState(updater: (state: PersistedState) => PersistedState | Promise<PersistedState>) {

@@ -8,10 +8,9 @@ import { sleep } from "./lib/util.js"
 
 const service = new LauncherService()
 let cleanedUp = false
-let renderRevision = 0
 
 function renderApp() {
-  return <App service={service} renderRevision={renderRevision} />
+  return <App service={service} />
 }
 
 async function cleanup() {
@@ -76,7 +75,6 @@ void startTestControlChannel()
 const instance = render(renderApp(), { exitOnCtrlC: false })
 
 process.stdout.on("resize", () => {
-  renderRevision += 1
   instance.clear()
   instance.rerender(renderApp())
 })

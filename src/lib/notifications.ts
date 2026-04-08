@@ -122,6 +122,12 @@ export class NotificationTracker {
       this.initialized = true
     }
 
+    for (const sessionID of this.lastCompletionAt.keys()) {
+      if (!nextSessionByID.has(sessionID)) {
+        this.lastCompletionAt.delete(sessionID)
+      }
+    }
+
     this.busySessionIDs = nextBusySessionIDs
     this.sessionByID = nextSessionByID
     return effects

@@ -10,6 +10,7 @@ import {
   parkPreviewSession,
   pruneBackgroundSessions,
   respawnPane,
+  setPaneSession,
   setPreviewSession,
   setPaneTitle,
   swapPreviewWithSessionPane,
@@ -113,6 +114,12 @@ export async function openSessionWithPreferredTerminal(input: OpenInput): Promis
     "--session",
     input.sessionID,
   ])
+  await setPaneSession({
+    paneID: rightPaneID,
+    sessionID: input.sessionID,
+    directory: input.directory,
+    title: input.title,
+  })
   await setPaneTitle(rightPaneID, sessionWindowTitle(input.directory, input.title))
   await setPreviewSession({
     sessionID: input.sessionID,

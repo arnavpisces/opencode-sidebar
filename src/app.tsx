@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Box, Text, useApp, useInput, useStdout } from "ink"
 import { STATUS_MESSAGE_HOLD_MS, WINDOW_POLL_INTERVAL_MS } from "./lib/constants.js"
 import { LauncherService } from "./lib/opencode.js"
@@ -241,13 +241,12 @@ function mascotTitle(input: {
           ? "Happy and breathing"
           : "Sleeping"
 
-  const syncBadge = `[SYNC ${SPINNER_FRAMES[input.frame % SPINNER_FRAMES.length]}]`
-  const wideTitle = `:: OPENCODE SIDEBAR v0.1 :: ${face} ${mood} :: ${syncBadge}`
-  const compactTitle = `:: OPENCODE SIDEBAR :: ${face} ${syncBadge}`
+  const wideTitle = `:: OPENCODE SIDEBAR v0.1 :: ${face} ${mood}`
+  const compactTitle = `:: OPENCODE SIDEBAR :: ${face}`
 
   if (input.compact) return compactTitle
   if (wideTitle.length <= input.width) return wideTitle
-  const mediumTitle = `:: OPENCODE SIDEBAR v0.1 :: ${face} :: ${syncBadge}`
+  const mediumTitle = `:: OPENCODE SIDEBAR v0.1 :: ${face}`
   if (mediumTitle.length <= input.width) return mediumTitle
   return compactTitle
 }
@@ -272,10 +271,8 @@ function Panel(props: {
 
 export function App({
   service,
-  renderRevision,
 }: {
   service: LauncherService
-  renderRevision: number
 }) {
   const { exit } = useApp()
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
@@ -289,7 +286,7 @@ export function App({
   const [busy, setBusy] = useState<string>()
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>()
   const [killTarget, setKillTarget] = useState<KillTarget>()
-  const [stickyStatusUntil, setStickyStatusUntil] = useState(0)
+  const stickyStatusUntilRef = useRef(0)
   const { width, height } = useTerminalSize()
   const now = useNowTick()
   const frame = useFrame(160)
@@ -320,11 +317,12 @@ export function App({
       // Best-effort cleanup only.
     }
     exit()
-  }, [exit])
+  }, [exit, service])
 
   const setTemporaryStatus = useCallback((message: string) => {
+    const nextStickyStatusUntil = Date.now() + STATUS_MESSAGE_HOLD_MS
+    stickyStatusUntilRef.current = nextStickyStatusUntil
     setStatus(message)
-    setStickyStatusUntil(Date.now() + STATUS_MESSAGE_HOLD_MS)
   }, [])
 
   const beginAddProject = useCallback(() => {
@@ -340,7 +338,7 @@ export function App({
       try {
         const next = await service.getSnapshot()
         setSnapshot(next)
-        if (Date.now() > stickyStatusUntil) {
+        if (Date.now() > stickyStatusUntilRef.current) {
           setStatus(`Connected to ${next.baseUrl} [${service.describeBackend()}]`)
         }
         setExpanded((current) => {
@@ -363,7 +361,7 @@ export function App({
         setLoading(false)
       }
     },
-    [stickyStatusUntil],
+    [service],
   )
 
   useEffect(() => {
@@ -794,7 +792,7 @@ export function App({
   const statusMessageText = error ? `STATE      ERROR :: ${error}` : busy ? `STATE      WORK :: ${busy} [${spinner}]` : `STATE      LINK :: ${status}`
   const statusMessageLines = wrapTextHard(statusMessageText, panelTextWidth)
   const toolsLines = wrapTextHard(
-    "[Enter] Load  [N] New  [D] Delete  [K] Kill  [/] Find  [A] Add  [X] Unpin  [Space] Expand  [R] Refresh  [Q] Quit  [Alt-b] Sidebar  [Alt-]] Preview",
+    "[Enter] Load  [N] New  [D] Delete  [K] Kill  [/] Find  [A] Add  [Space] Expand  [R] Refresh  [Q] Quit  [Ctrl-b + Arrow] Move panes",
     panelTextWidth,
   )
   const addProjectLines = showAddProjectModal
@@ -846,7 +844,7 @@ export function App({
   }, [rows, visibleRows])
 
   return (
-    <Box key={`${width}x${height}:${renderRevision}`} flexDirection="column" width={width} height={height} paddingX={1} paddingTop={1}>
+    <Box flexDirection="column" width={width} height={height} paddingX={1} paddingTop={1}>
       {showBanner ? <Panel title={bannerTitle} width={panelTextWidth} borderColor="cyan" titleColor="cyanBright" /> : null}
 
       <Box marginTop={panelGap}>
