@@ -1,19 +1,30 @@
 # Contributing
 
-Keep it simple.
-Most people overcomplicate this.
+Thanks for your interest in contributing. Contributions, issues, and suggestions are welcome.
 
 ## How to contribute
 
-1. Fork the repo
-2. Create a new branch
+1. Fork the repository
+2. Create a new branch (`feature/your-feature-name` or `fix/your-bug-name`)
 3. Make your changes
-4. Open a PR
+4. Commit with a clear message
+5. Push to your fork
+6. Open a Pull Request
 
 ## Guidelines
 
-- Keep PRs small and focused
-- Write clear commit messages
-- Add comments where needed
+* Keep pull requests small and focused
+* Write clear, descriptive commit messages
+* Add comments where necessary for readability
+* Ensure your code runs and does not break existing functionality
 
-Pull requests and opening issues are welcome.
+## Reporting issues
+
+If you find a bug or have a suggestion:
+
+* Check if an issue already exists
+* If not, open a new issue with clear details and steps to reproduce
+
+---
+
+Your contributions help improve the project. Appreciate your time and effort.
