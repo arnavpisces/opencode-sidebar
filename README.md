@@ -66,7 +66,7 @@ Pull requests and opening issues are welcome. For details, see:
 
 ### How to contribute
 - Fork the repository
-- Create a new branch (feature/... or fix/...)
+- Create a new branch (`feature/...` or `fix/...`)
 - Make your changes
 - Commit with a clear message
 - Open a Pull Request
