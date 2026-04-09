@@ -21,6 +21,7 @@ OpenCode is easier to use when the session list, preview pane, and TUI stay toge
 ### Prerequisites
 - tmux
 - bun
+
 Make sure both are installed and available in your PATH.
 
 Then run-
