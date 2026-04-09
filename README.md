@@ -16,29 +16,24 @@ OpenCode is easier to use when the session list, preview pane, and TUI stay toge
 - Sound notifications when OpenCode needs input or finishes work
 - Automatic cleanup of parked `opencode attach` panes
 
-## Installation
-
-### Requirements
-
-- `bun`
-- `tmux`
-- `opencode`
-
-### Install Dependencies
+## Quick Start
 
 ```bash
+git clone https://github.com/arnavpisces/opencode-sidebar.git
+cd opencode-sidebar
 bun install
-```
-
-### Start the Sidebar
-
-```bash
 ./bin/opencode-sidebar-tmux
 ```
+
+If this helped you, consider giving it a ⭐.
 
 ## Usage
 
 ![OpenCode Sidebar screenshot](./screenshot.jpg)
+
+```bash
+./bin/opencode-sidebar-tmux
+```
 
 ### Shortcuts
 
@@ -70,7 +65,20 @@ bun install
 
 ## Contribution
 
-Pull requests and issues are welcome.
+Pull requests and opening issues are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) (prevents chaos), [.github/ISSUE_TEMPLATE/bug_report.md](./.github/ISSUE_TEMPLATE/bug_report.md), and [.github/pull_request_template.md](./.github/pull_request_template.md).
+
+### How to contribute
+
+1. Fork the repo
+2. Create a new branch
+3. Make your changes
+4. Open a PR
+
+### Guidelines
+
+- Keep PRs small and focused
+- Write clear commit messages
+- Add comments where needed
 
 ## License
 
