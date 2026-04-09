@@ -59,23 +59,27 @@ bun install
 
 ## Contribution
 
-Pull requests and opening issues are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) (prevents chaos), [.github/ISSUE_TEMPLATE/bug_report.md](./.github/ISSUE_TEMPLATE/bug_report.md), and [.github/pull_request_template.md](./.github/pull_request_template.md).
+Pull requests and opening issues are welcome. For details, see:
+- [CONTRIBUTING.md](./CONTRIBUTING.md)
+- [.github/ISSUE_TEMPLATE/bug_report.md](./.github/ISSUE_TEMPLATE/bug_report.md)
+- [.github/pull_request_template.md](./.github/pull_request_template.md)
 
 ### How to contribute
-
-1. Fork the repo
-2. Create a new branch
-3. Make your changes
-4. Open a PR
+- Fork the repository
+- Create a new branch (feature/... or fix/...)
+- Make your changes
+- Commit with a clear message
+- Open a Pull Request
 
 ### Guidelines
 
 - Keep PRs small and focused
-- Write clear commit messages
+- Write clear, descriptive commit messages
+- Ensure your changes do not break existing functionality
 - Add comments where needed
 
 ## License
 
-Apache-2.0. Copyright 2026 Arnav Kumar.
+Apache-2.0 © 2026 Arnav Kumar
 ---
 If this repo helped you, consider giving it a ⭐. Happy Vibing :)
