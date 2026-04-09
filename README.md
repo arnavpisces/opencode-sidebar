@@ -25,15 +25,9 @@ bun install
 ./bin/opencode-sidebar-tmux
 ```
 
-If this helped you, consider giving it a ⭐.
-
 ## Usage
 
-![OpenCode Sidebar screenshot](./screenshot.jpg)
-
-```bash
-./bin/opencode-sidebar-tmux
-```
+![OpenCode Sidebar screenshot](./static/screenshot.jpg)
 
 ### Shortcuts
 
@@ -83,3 +77,5 @@ Pull requests and opening issues are welcome. See [CONTRIBUTING.md](./CONTRIBUTI
 ## License
 
 Apache-2.0. Copyright 2026 Arnav Kumar.
+---
+If this repo helped you, consider giving it a ⭐. Happy Vibing :)
