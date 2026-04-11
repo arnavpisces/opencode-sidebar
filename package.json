@@ -1,5 +1,5 @@
 {
-  "name": "@arnavpisces/opencode-sidebar",
+  "name": "opencode-sidebar",
   "version": "0.1.0",
   "description": "tmux sidebar launcher for OpenCode",
   "type": "module",
@@ -44,13 +44,13 @@
     "launcher:tmux": "./bin/opencode-sidebar-tmux",
     "open:test": "bun run src/dev-open-session.ts",
     "prepack": "npm run verify",
-    "prepublishOnly": "npm run verify:tmux",
     "test": "bun test",
     "test:tmux:cleanup": "./test/run-tmux-cleanup.sh",
     "test:tmux:flow": "./test/run-tmux-flow.sh",
     "test:tmux:sigint-cleanup": "./test/run-sidebar-sigint-cleanup.sh",
-    "typecheck": "./node_modules/.bin/tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm run test && npm run build",
+    "verify:release": "npm run verify && npm run verify:tmux",
     "verify:tmux": "npm run test:tmux:flow && npm run test:tmux:cleanup && npm run test:tmux:sigint-cleanup"
   },
   "dependencies": {

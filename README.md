@@ -28,11 +28,37 @@ Make sure they are installed and available in your PATH.
 ### Install from npm
 
 ```bash
-npm install -g @arnavpisces/opencode-sidebar
+npm install -g opencode-sidebar
 opencode-sidebar
 ```
 
 The CLI checks for `tmux` and `opencode` at runtime. If either command is missing, it prints a clear error instead of failing silently.
+
+### npm Docs
+
+Install:
+
+```bash
+npm install -g opencode-sidebar
+```
+
+Run:
+
+```bash
+opencode-sidebar
+```
+
+Update:
+
+```bash
+npm update -g opencode-sidebar
+```
+
+Remove:
+
+```bash
+npm uninstall -g opencode-sidebar
+```
 
 ### Run from source
 
@@ -83,7 +109,8 @@ opencode-sidebar
 ## Release Checks
 
 - `npm run verify`: typecheck, unit tests, and build
-- `npm run verify:tmux`: tmux integration checks used before publishing
+- `npm run verify:tmux`: manual tmux integration checks in isolated temp workspaces
+- `npm run verify:release`: full maintainer-only release check
 
 ## Contribution
 

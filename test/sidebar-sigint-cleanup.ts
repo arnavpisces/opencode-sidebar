@@ -1,18 +1,17 @@
 #!/usr/bin/env bun
 import { execFile } from "node:child_process"
 import fs from "node:fs/promises"
+import path from "node:path"
 import { promisify } from "node:util"
 import { LauncherService } from "../src/lib/opencode.js"
+import type { SessionRecord } from "../src/lib/types.js"
+import { cleanupTestSessions, createTestWorkspace, getTestRoot, sleep } from "./test-support.js"
 
 const execFileAsync = promisify(execFile)
 
 async function tmux(args: string[]) {
   const { stdout } = await execFileAsync("tmux", args)
   return stdout.trim()
-}
-
-async function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 async function waitForSession(name: string, timeoutMs = 15_000) {
@@ -50,7 +49,11 @@ async function waitForSessionIDsToAppear(sessionIDs: string[], timeoutMs = 15_00
 async function main() {
   const root = process.cwd()
   const tmuxSession = `sidebar-sigint-${process.pid}`
-  const controlFile = `${root}/test/sidebar-sigint-control-${process.pid}.txt`
+  const controlFile = path.join(getTestRoot(), `sidebar-sigint-control-${process.pid}.txt`)
+  const workspace = await createTestWorkspace("sigint")
+  const service = new LauncherService()
+  let launchedSessionIDs: string[] = []
+  const createdSessions: Array<{ directory: string; sessionID: string }> = []
 
   await execFileAsync("tmux", ["kill-session", "-t", tmuxSession]).catch(() => {})
   await fs.writeFile(controlFile, "")
@@ -64,6 +67,21 @@ async function main() {
   ])
 
   try {
+    const { client } = await service.ensureReady()
+    const firstResult = await client.session.create({ directory: workspace })
+    const secondResult = await client.session.create({ directory: workspace })
+    const first = firstResult.data as SessionRecord | undefined
+    const second = secondResult.data as SessionRecord | undefined
+
+    if (!first || !second) {
+      throw new Error("Could not create isolated sessions for the SIGINT cleanup test")
+    }
+
+    createdSessions.push(
+      { directory: workspace, sessionID: first.id },
+      { directory: workspace, sessionID: second.id },
+    )
+
     await waitForSession(tmuxSession)
     await sleep(2500)
 
@@ -73,19 +91,14 @@ async function main() {
       throw new Error("Could not determine sidebar pane ID")
     }
 
-    await fs.writeFile(controlFile, `new:${root}\nnew:${root}\n`)
+    await fs.writeFile(controlFile, `open:${first.id}\nopen:${second.id}\n`)
 
-    const service = new LauncherService()
     const started = Date.now()
-    let launchedSessionIDs: string[] = []
 
     while (Date.now() - started < 15_000) {
-      const snapshot = await service.getSnapshot()
-      launchedSessionIDs = snapshot.directories
-        .find((item) => item.directory === root)
-        ?.sessions
-        .slice(0, 2)
-        .map((session) => session.id) ?? []
+      const active = await tmux(["list-panes", "-a", "-F", "#{@opencode_session_id}"]).catch(() => "")
+      const sessionIDs = new Set(active.split("\n").filter(Boolean))
+      launchedSessionIDs = [first.id, second.id].filter((sessionID) => sessionIDs.has(sessionID))
       if (launchedSessionIDs.length >= 2) break
       await sleep(250)
     }
@@ -101,6 +114,11 @@ async function main() {
 
     console.log("sidebar-sigint-cleanup-ok")
   } finally {
+    await service.shutdown().catch(() => {})
+    await cleanupTestSessions(
+      service,
+      [...createdSessions, ...launchedSessionIDs.map((sessionID) => ({ directory: workspace, sessionID }))],
+    )
     await fs.rm(controlFile, { force: true }).catch(() => {})
     await execFileAsync("tmux", ["kill-session", "-t", tmuxSession]).catch(() => {})
   }
