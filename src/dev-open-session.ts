@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { LauncherService } from "./lib/opencode.js"
 
 const service = new LauncherService()

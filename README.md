@@ -32,9 +32,24 @@ bun install
 ./bin/opencode-sidebar-tmux
 ```
 
+### Install from npm
+
+```bash
+npm install -g @arnavpisces/opencode-sidebar
+opencode-sidebar
+```
+
+The CLI checks for `tmux` and `opencode` at runtime. If either command is missing, it prints a clear error instead of failing silently.
+
+If this repo helped you, consider giving it a ⭐.
+
 ## Usage
 
-![OpenCode Sidebar screenshot](./static/screenshot.jpg)
+![OpenCode Sidebar screenshot](https://raw.githubusercontent.com/arnavpisces/opencode-sidebar/main/static/screenshot.jpg)
+
+```bash
+opencode-sidebar
+```
 
 ### Shortcuts
 
@@ -62,31 +77,20 @@ bun install
 - `OPENCODE_SIDEBAR_NOTIFY_ATTENTION_SOUND`: custom sound for questions and approval requests
 - `OPENCODE_SIDEBAR_NOTIFY_COMPLETE_SOUND`: custom sound for completion
 - Sound values can be a system sound name like `Glass` or `Ping`, or a full path such as `~/Music/done.aiff`
-- `OPENCODE_SIDEBAR_TEST_CONTROL`: test-only file that `src/index.tsx` polls for `open:` and `new:` commands
+
+## Release Checks
+
+- `npm run verify`: typecheck, unit tests, and build
+- `npm run verify:tmux`: tmux integration checks used before publishing
 
 ## Contribution
 
 Pull requests and opening issues are welcome. For details, see:
+
 - [CONTRIBUTING.md](./CONTRIBUTING.md)
 - [.github/ISSUE_TEMPLATE/bug_report.md](./.github/ISSUE_TEMPLATE/bug_report.md)
 - [.github/pull_request_template.md](./.github/pull_request_template.md)
 
-### How to contribute
-- Fork the repository
-- Create a new branch (`feature/...` or `fix/...`)
-- Make your changes
-- Commit with a clear message
-- Open a Pull Request
-
-### Guidelines
-
-- Keep PRs small and focused
-- Write clear, descriptive commit messages
-- Ensure your changes do not break existing functionality
-- Add comments where needed
-
 ## License
 
 Apache-2.0 © 2026 Arnav Kumar
----
-If this repo helped you, consider giving it a ⭐. Happy Vibing :)

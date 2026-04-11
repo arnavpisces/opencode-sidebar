@@ -3,8 +3,4 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-if [ -z "${TMUX:-}" ]; then
-  exec tmux new-session -A -s opencode-sidebar -f destroy-unattached=on "cd \"$ROOT\" && OPENCODE_SIDEBAR_BACKEND=tmux bun run src/index.tsx"
-fi
-
-exec env OPENCODE_SIDEBAR_BACKEND=tmux bun run "$ROOT/src/index.tsx"
+exec node "$ROOT/bin/opencode-sidebar.js"

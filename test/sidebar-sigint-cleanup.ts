@@ -55,7 +55,13 @@ async function main() {
   await execFileAsync("tmux", ["kill-session", "-t", tmuxSession]).catch(() => {})
   await fs.writeFile(controlFile, "")
 
-  await execFileAsync("tmux", ["new-session", "-d", "-s", tmuxSession, `cd \"${root}\" && OPENCODE_SIDEBAR_BACKEND=tmux OPENCODE_SIDEBAR_TEST_CONTROL=\"${controlFile}\" bun run src/index.tsx`])
+  await execFileAsync("tmux", [
+    "new-session",
+    "-d",
+    "-s",
+    tmuxSession,
+    `cd \"${root}\" && OPENCODE_SIDEBAR_BACKEND=tmux OPENCODE_SIDEBAR_TEST_CONTROL=\"${controlFile}\" bun run test/sidebar-test-entry.tsx`,
+  ])
 
   try {
     await waitForSession(tmuxSession)

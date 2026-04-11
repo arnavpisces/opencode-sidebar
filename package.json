@@ -1,15 +1,57 @@
 {
-  "name": "opencode-sidebar-launcher",
+  "name": "@arnavpisces/opencode-sidebar",
   "version": "0.1.0",
-  "private": true,
+  "description": "tmux sidebar launcher for OpenCode",
   "type": "module",
+  "license": "Apache-2.0",
+  "author": "Arnav Kumar (https://github.com/arnavpisces)",
+  "homepage": "https://github.com/arnavpisces/opencode-sidebar#readme",
+  "bugs": {
+    "url": "https://github.com/arnavpisces/opencode-sidebar/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arnavpisces/opencode-sidebar.git"
+  },
+  "keywords": [
+    "opencode",
+    "tmux",
+    "ink",
+    "cli"
+  ],
+  "bin": {
+    "opencode-sidebar": "./bin/opencode-sidebar.js"
+  },
+  "files": [
+    "bin/opencode-sidebar.js",
+    "dist",
+    "scripts/system-dependencies.mjs",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && ./node_modules/.bin/tsc -p tsconfig.build.json",
     "start": "bun run src/index.tsx",
     "dev": "bun --watch src/index.tsx",
     "launcher": "./bin/opencode-sidebar-tmux",
     "launcher:tmux": "./bin/opencode-sidebar-tmux",
     "open:test": "bun run src/dev-open-session.ts",
-    "test": "bun test"
+    "prepack": "npm run verify",
+    "prepublishOnly": "npm run verify:tmux",
+    "test": "bun test",
+    "test:tmux:cleanup": "./test/run-tmux-cleanup.sh",
+    "test:tmux:flow": "./test/run-tmux-flow.sh",
+    "test:tmux:sigint-cleanup": "./test/run-sidebar-sigint-cleanup.sh",
+    "typecheck": "./node_modules/.bin/tsc --noEmit",
+    "verify": "npm run typecheck && npm run test && npm run build",
+    "verify:tmux": "npm run test:tmux:flow && npm run test:tmux:cleanup && npm run test:tmux:sigint-cleanup"
   },
   "dependencies": {
     "@opencode-ai/sdk": "1.3.15",

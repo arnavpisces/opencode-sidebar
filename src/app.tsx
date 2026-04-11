@@ -271,8 +271,10 @@ function Panel(props: {
 
 export function App({
   service,
+  onCleanup,
 }: {
   service: LauncherService
+  onCleanup?: () => Promise<void> | void
 }) {
   const { exit } = useApp()
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
@@ -312,12 +314,16 @@ export function App({
 
   const closeApp = useCallback(async () => {
     try {
-      await service.shutdown()
+      if (onCleanup) {
+        await onCleanup()
+      } else {
+        await service.shutdown()
+      }
     } catch {
       // Best-effort cleanup only.
     }
     exit()
-  }, [exit, service])
+  }, [exit, onCleanup, service])
 
   const setTemporaryStatus = useCallback((message: string) => {
     const nextStickyStatusUntil = Date.now() + STATUS_MESSAGE_HOLD_MS
