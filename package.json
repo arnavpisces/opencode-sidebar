@@ -38,7 +38,7 @@
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && ./node_modules/.bin/tsc -p tsconfig.build.json",
-    "start": "bun run src/index.tsx",
+    "start": "npm run build && node ./bin/opencode-sidebar.js",
     "dev": "bun --watch src/index.tsx",
     "launcher": "./bin/opencode-sidebar-tmux",
     "launcher:tmux": "./bin/opencode-sidebar-tmux",

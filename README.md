@@ -19,18 +19,11 @@ OpenCode is easier to use when the session list, preview pane, and TUI stay toge
 ## Quick Start
 
 ### Prerequisites
+- Node.js 20+
 - `tmux`
-- `bun`
+- `opencode`
 
-Make sure both are installed and available in your PATH.
-
-Then run-
-```bash
-git clone https://github.com/arnavpisces/opencode-sidebar.git
-cd opencode-sidebar
-bun install
-./bin/opencode-sidebar-tmux
-```
+Make sure they are installed and available in your PATH.
 
 ### Install from npm
 
@@ -41,7 +34,16 @@ opencode-sidebar
 
 The CLI checks for `tmux` and `opencode` at runtime. If either command is missing, it prints a clear error instead of failing silently.
 
-If this repo helped you, consider giving it a ⭐.
+### Run from source
+
+```bash
+git clone https://github.com/arnavpisces/opencode-sidebar.git
+cd opencode-sidebar
+bun install
+npm run start
+```
+
+`npm run start` builds the local `dist/` output and launches the same tmux-backed CLI used by the published package.
 
 ## Usage
 
@@ -94,3 +96,5 @@ Pull requests and opening issues are welcome. For details, see:
 ## License
 
 Apache-2.0 © 2026 Arnav Kumar
+
+If this repo helped you, consider giving it a ⭐.
