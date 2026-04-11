@@ -5,7 +5,7 @@ import { LauncherService } from "./lib/opencode.js"
 import type { DirectoryRecord, SidebarRow, Snapshot } from "./lib/types.js"
 import { isPrintable, relativeTime, sanitizePastedText, truncate, wrapTextHard } from "./lib/util.js"
 
-type Mode = "browse" | "search" | "add-project"
+type Mode = "browse" | "search" | "add-project" | "rename-session"
 type DeleteTarget = {
   sessionID: string
   directory: string
@@ -13,6 +13,12 @@ type DeleteTarget = {
 }
 
 type KillTarget = {
+  sessionID: string
+  directory: string
+  title: string
+}
+
+type RenameTarget = {
   sessionID: string
   directory: string
   title: string
@@ -288,6 +294,7 @@ export function App({
   const [busy, setBusy] = useState<string>()
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>()
   const [killTarget, setKillTarget] = useState<KillTarget>()
+  const [renameTarget, setRenameTarget] = useState<RenameTarget>()
   const stickyStatusUntilRef = useRef(0)
   const { width, height } = useTerminalSize()
   const now = useNowTick()
@@ -336,6 +343,22 @@ export function App({
     setInputValue("")
     setTemporaryStatus("Enter an absolute or ~/ path for the new project folder")
   }, [setTemporaryStatus])
+
+  const beginRenameSession = useCallback(() => {
+    if (!selectedRow || selectedRow.kind !== "session") {
+      setTemporaryStatus("Select a session to rename")
+      return
+    }
+    const title = selectedRow.session.title || "New session"
+    setRenameTarget({
+      sessionID: selectedRow.session.id,
+      directory: selectedRow.record.directory,
+      title,
+    })
+    setMode("rename-session")
+    setInputValue(title)
+    setTemporaryStatus("Edit the session title and press Enter")
+  }, [selectedRow, setTemporaryStatus])
 
   const refresh = useCallback(
     async (preferredSelectedKey?: string) => {
@@ -393,7 +416,15 @@ export function App({
       setKillTarget(undefined)
       setTemporaryStatus("Selected session is already gone")
     }
-  }, [deleteTarget, killTarget, setTemporaryStatus, snapshot])
+    if (renameTarget && !snapshotHasKey(snapshot, `session:${renameTarget.sessionID}`)) {
+      setRenameTarget(undefined)
+      if (mode === "rename-session") {
+        setMode("browse")
+        setInputValue("")
+      }
+      setTemporaryStatus("Selected session is already gone")
+    }
+  }, [deleteTarget, killTarget, mode, renameTarget, setTemporaryStatus, snapshot])
 
   useEffect(() => {
     if (!rows.length && snapshot?.directories.length) {
@@ -426,6 +457,7 @@ export function App({
     if (!value) {
       setMode("browse")
       setInputValue("")
+      setRenameTarget(undefined)
       return
     }
 
@@ -442,8 +474,25 @@ export function App({
       } finally {
         setBusy(undefined)
       }
+      return
     }
-  }, [inputValue, mode, refresh, setTemporaryStatus])
+
+    if (mode === "rename-session" && renameTarget) {
+      setBusy(`Renaming ${renameTarget.title}...`)
+      try {
+        const title = await service.renameSession(renameTarget.directory, renameTarget.sessionID, value)
+        setTemporaryStatus(`Renamed session to ${title}`)
+        setMode("browse")
+        setInputValue("")
+        setRenameTarget(undefined)
+        await refresh(`session:${renameTarget.sessionID}`)
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setBusy(undefined)
+      }
+    }
+  }, [inputValue, mode, refresh, renameTarget, service, setTemporaryStatus])
 
   const openSelection = useCallback(async () => {
     if (!selectedRow) return
@@ -599,6 +648,14 @@ export function App({
     setTemporaryStatus("Kill cancelled")
   }, [killTarget, setTemporaryStatus])
 
+  const cancelRenameSelection = useCallback(() => {
+    if (!renameTarget && mode !== "rename-session") return
+    setRenameTarget(undefined)
+    setMode("browse")
+    setInputValue("")
+    setTemporaryStatus("Rename cancelled")
+  }, [mode, renameTarget, setTemporaryStatus])
+
   useInput(
     (input, key) => {
       const loweredInput = input.toLowerCase()
@@ -627,6 +684,30 @@ export function App({
         }
         if (key.return || loweredInput === "y") {
           void confirmKillSelection()
+        }
+        return
+      }
+
+      if (mode === "rename-session") {
+        if (key.escape) {
+          cancelRenameSelection()
+          return
+        }
+        if (key.return) {
+          void commitInput()
+          return
+        }
+        if (key.backspace || key.delete) {
+          setInputValue((current) => current.slice(0, -1))
+          return
+        }
+        const pasted = sanitizePastedText(input)
+        if (pasted && !key.ctrl && !key.meta) {
+          setInputValue((current) => current + pasted)
+          return
+        }
+        if (isPrintable(input)) {
+          setInputValue((current) => current + input)
         }
         return
       }
@@ -708,6 +789,10 @@ export function App({
         requestKillSelection()
         return
       }
+      if (input === "e") {
+        beginRenameSession()
+        return
+      }
       if (input === "r") {
         void refresh()
         return
@@ -781,6 +866,7 @@ export function App({
   const activityGlyph = hasWorkingSessions ? liveGlyph : activeCount > 0 ? "|" : "."
   const statusTitle = `STATUS / MATRIX [${activityGlyph}]`
   const showAddProjectModal = mode === "add-project"
+  const showRenameSessionModal = mode === "rename-session"
   const showToolsPanel = !compactLayout || (!deleteTarget && !killTarget)
   const apiState = snapshot ? "CONNECTED" : error ? "DEGRADED" : "BOOTING"
   const statusLines = compactLayout
@@ -798,7 +884,7 @@ export function App({
   const statusMessageText = error ? `STATE      ERROR :: ${error}` : busy ? `STATE      WORK :: ${busy} [${spinner}]` : `STATE      LINK :: ${status}`
   const statusMessageLines = wrapTextHard(statusMessageText, panelTextWidth)
   const toolsLines = wrapTextHard(
-    "[Enter] Load  [N] New  [D] Delete  [K] Kill  [/] Find  [A] Add  [Space] Expand  [R] Refresh  [Q] Quit  [Ctrl-b + Arrow] Move panes",
+    "[Enter] Load  [N] New  [E] Rename  [D] Delete  [K] Kill  [/] Find  [A] Add  [Space] Expand  [R] Refresh  [Q] Quit  [Ctrl-b + Arrow] Move panes",
     panelTextWidth,
   )
   const addProjectLines = showAddProjectModal
@@ -806,6 +892,13 @@ export function App({
         ...wrapTextHard(`Path :: ${inputValue}${inputCursor}`, panelTextWidth),
         ...wrapTextHard("Paste an absolute path or use ~/ to add a folder to the sidebar.", panelTextWidth),
         ...wrapTextHard("[Enter] Add folder  [Esc] Cancel", panelTextWidth),
+      ]
+    : []
+  const renameSessionLines = showRenameSessionModal
+    ? [
+        ...wrapTextHard(`Title :: ${inputValue}${inputCursor}`, panelTextWidth),
+        ...wrapTextHard("Give the selected session a new title.", panelTextWidth),
+        ...wrapTextHard("[Enter] Rename  [Esc] Cancel", panelTextWidth),
       ]
     : []
   const promptPrimary = mode === "search"
@@ -839,8 +932,9 @@ export function App({
     (deleteTarget ? 3 + deleteLines.length + panelGap : 0) +
     (killTarget ? 3 + killLines.length + panelGap : 0) +
     (showAddProjectModal ? 3 + addProjectLines.length + panelGap : 0) +
+    (showRenameSessionModal ? 3 + renameSessionLines.length + panelGap : 0) +
     (showToolsPanel ? 3 + toolsLines.length + panelGap : 0) +
-    (mode !== "add-project" ? 3 + promptPrimaryLines.length + promptDetail.length + panelGap : 0) +
+    (mode !== "add-project" && mode !== "rename-session" ? 3 + promptPrimaryLines.length + promptDetail.length + panelGap : 0) +
     projectPanelStaticHeight
   const visibleRowCount = Math.max(1, height - fixedHeight)
   const visibleRows = useMemo(() => windowRows(rows, selectedIndex, visibleRowCount), [rows, selectedIndex, visibleRowCount])
@@ -897,6 +991,18 @@ export function App({
           <Panel title="ADD / PROJECT / FOLDER" width={panelTextWidth} borderColor="greenBright" titleColor="greenBright">
             {addProjectLines.map((line, index) => (
               <Text key={`add-project-${index}`} color={index === 2 ? "yellowBright" : index === 0 ? "greenBright" : "white"}>
+                {line}
+              </Text>
+            ))}
+          </Panel>
+        </Box>
+      ) : null}
+
+      {showRenameSessionModal ? (
+        <Box marginTop={panelGap}>
+          <Panel title="RENAME / SESSION / TITLE" width={panelTextWidth} borderColor="magentaBright" titleColor="magentaBright">
+            {renameSessionLines.map((line, index) => (
+              <Text key={`rename-session-${index}`} color={index === 2 ? "yellowBright" : index === 0 ? "magentaBright" : "white"}>
                 {line}
               </Text>
             ))}
@@ -995,7 +1101,7 @@ export function App({
         </Box>
       ) : null}
 
-      {mode !== "add-project" ? (
+      {mode !== "add-project" && mode !== "rename-session" ? (
         <Box width={panelOuterWidth} marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? "gray" : "greenBright"} flexDirection="column" paddingX={1}>
           {promptPrimaryLines.map((line, index) => (
             <Text key={`prompt-primary-${index}`} color={mode === "browse" ? "white" : "greenBright"}>

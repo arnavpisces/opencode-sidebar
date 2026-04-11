@@ -90,6 +90,36 @@ export async function findWindowBySessionID(sessionID: string) {
   return windows.find((window) => window.sessionID === sessionID)
 }
 
+export async function renameSessionWindow(sessionID: string, directory: string, title: string) {
+  const preview = await getPreviewSessionMeta()
+  const target = await findAnyWindowBySessionID(sessionID)
+
+  if (preview?.sessionID === sessionID && preview.paneID) {
+    await setPreviewSession({
+      sessionID,
+      directory,
+      title,
+      paneID: preview.paneID,
+    })
+    await setPaneSession({
+      paneID: preview.paneID,
+      sessionID,
+      directory,
+      title,
+    })
+    await setPaneTitle(preview.paneID, sessionWindowTitle(directory, title))
+    return true
+  }
+
+  if (!target) return false
+
+  await runTmux(["rename-window", "-t", target.windowID, tmuxWindowName(directory, title)]).catch(() => {})
+  await runTmux(["set-option", "-w", "-t", target.windowID, SESSION_OPTION, sessionID]).catch(() => {})
+  await runTmux(["set-option", "-w", "-t", target.windowID, DIRECTORY_OPTION, directory]).catch(() => {})
+  await runTmux(["set-option", "-w", "-t", target.windowID, TITLE_OPTION, title]).catch(() => {})
+  return true
+}
+
 export async function findBackgroundWindowBySessionID(sessionID: string) {
   const preview = await getPreviewSessionMeta()
   const windows = await listActiveSessionWindows()

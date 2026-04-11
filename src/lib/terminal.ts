@@ -9,6 +9,7 @@ import {
   listActiveSessionWindows,
   parkPreviewSession,
   pruneBackgroundSessions,
+  renameSessionWindow,
   respawnPane,
   setPaneSession,
   setPreviewSession,
@@ -41,6 +42,10 @@ export async function hasRunningSessionWindow(sessionID: string) {
 
 export async function killSessionWindow(sessionID: string) {
   return killSessionWindowBySessionID(sessionID)
+}
+
+export async function retitleSessionWindow(sessionID: string, directory: string, title: string) {
+  return renameSessionWindow(sessionID, directory, title)
 }
 
 export async function cleanupSidebarSessions(sessionIDs: Iterable<string>) {

@@ -23,6 +23,7 @@ import {
   killSessionWindow,
   listActiveSessions,
   openSessionWithPreferredTerminal,
+  retitleSessionWindow,
 } from "./terminal.js"
 
 type OpencodeClient = ReturnType<typeof createOpencodeClient>
@@ -338,6 +339,21 @@ export class LauncherService {
       sessionID,
       directory,
     })
+  }
+
+  async renameSession(directory: string, sessionID: string, title: string) {
+    const { client } = await this.ensureReady()
+    const nextTitle = title.trim()
+    if (!nextTitle) {
+      throw new Error("Session title is empty")
+    }
+    await client.session.update({
+      sessionID,
+      directory,
+      title: nextTitle,
+    })
+    await retitleSessionWindow(sessionID, directory, nextTitle).catch(() => false)
+    return nextTitle
   }
 
   async killSession(sessionID: string) {

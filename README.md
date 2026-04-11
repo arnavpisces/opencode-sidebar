@@ -48,6 +48,12 @@ Run:
 opencode-sidebar
 ```
 
+Rename:
+
+```text
+Select a session and press e
+```
+
 Update:
 
 ```bash
@@ -84,6 +90,7 @@ opencode-sidebar
 - `↑` / `↓`: move
 - `Enter`: load or recall the selected session into preview
 - `n`: new session
+- `e`: rename session
 - `d`: delete session with confirmation
 - `k`: kill a running session window without deleting history
 - `/`: search
