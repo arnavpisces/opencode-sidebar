@@ -32,7 +32,6 @@ type ReadyState = {
   baseUrl: string
   port: number
 }
-const RECENT_COMPLETION_WINDOW_MS = 5 * 60_000
 
 async function isHealthy(port: number) {
   try {
@@ -153,7 +152,6 @@ async function fetchPendingPermissions(client: OpencodeClient) {
 }
 
 function mergeSessionStatuses(sessions: SessionRecord[], statuses: Record<string, SessionRuntimeStatus>) {
-  const now = Date.now()
   return sessions.map((session) => {
     const status = statuses[session.id]
     if (status) {
@@ -162,12 +160,10 @@ function mergeSessionStatuses(sessions: SessionRecord[], statuses: Record<string
         status,
       }
     }
-    const justCompleted = now - session.time.updated <= RECENT_COMPLETION_WINDOW_MS
     return {
       ...session,
       status: {
         type: "idle",
-        justCompleted,
       } satisfies SessionRuntimeStatus,
     }
   })

@@ -20,7 +20,7 @@
     "cli"
   ],
   "bin": {
-    "opencode-sidebar": "./bin/opencode-sidebar.js"
+    "opencode-sidebar": "bin/opencode-sidebar.js"
   },
   "files": [
     "bin/opencode-sidebar.js",

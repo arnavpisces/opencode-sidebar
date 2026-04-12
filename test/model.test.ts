@@ -97,4 +97,26 @@ describe("buildSnapshot", () => {
     })
     expect(snapshot.directories[0].sessions).toEqual([])
   })
+
+  test("plain idle sessions do not get completion markers from recent updates alone", () => {
+    const snapshot = buildSnapshot({
+      baseUrl: "http://127.0.0.1:42112",
+      serverPort: 42112,
+      pinnedDirectories: [],
+      panes: [],
+      projects: [],
+      sessions: [
+        {
+          id: "session_renamed",
+          title: "Renamed session",
+          directory: "/tmp/alpha",
+          status: { type: "idle" },
+          time: { created: 1, updated: Date.now() },
+          project: null,
+        },
+      ],
+    })
+
+    expect(snapshot.directories[0].sessions[0].status).toEqual({ type: "idle" })
+  })
 })
