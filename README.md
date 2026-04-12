@@ -27,6 +27,10 @@ OpenCode is easier to use when the session list, preview pane, and TUI stay toge
 
 Make sure they are installed and available in your PATH.
 
+### Package
+
+- npm package: https://www.npmjs.com/package/opencode-sidebar
+
 ### Install from npm
 
 ```bash
@@ -36,11 +40,7 @@ opencode-sidebar
 
 The CLI checks for `tmux` and `opencode` at runtime. If either command is missing, it prints a clear error instead of failing silently.
 
-### Package
-
-- npm package: https://www.npmjs.com/package/opencode-sidebar
-
-### Run from source
+### Build & run from source
 
 ```bash
 git clone https://github.com/arnavpisces/opencode-sidebar.git
