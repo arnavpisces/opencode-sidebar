@@ -79,7 +79,9 @@ npm run start
 
 ## Usage
 
-![OpenCode Sidebar screenshot](https://raw.githubusercontent.com/arnavpisces/opencode-sidebar/main/static/demo-final-new.gif)
+![OpenCode Sidebar Gif](https://raw.githubusercontent.com/arnavpisces/opencode-sidebar/main/static/demo-final-new.gif)
+
+![OpenCode Sidebar Screenshot](https://raw.githubusercontent.com/arnavpisces/opencode-sidebar/main/static/screenshot.jpg)
 
 ```bash
 opencode-sidebar
