@@ -1,7 +1,6 @@
 # OpenCode Sidebar
 
 [![npm version](https://img.shields.io/npm/v/opencode-sidebar.svg)](https://www.npmjs.com/package/opencode-sidebar)
-[![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-available-24292f)](https://github.com/arnavpisces/opencode-sidebar/pkgs/npm/opencode-sidebar)
 
 Tmux sidebar launcher for `opencode`.
 
@@ -37,10 +36,9 @@ opencode-sidebar
 
 The CLI checks for `tmux` and `opencode` at runtime. If either command is missing, it prints a clear error instead of failing silently.
 
-### Package and Releases
+### Package
 
 - npm package: https://www.npmjs.com/package/opencode-sidebar
-- GitHub package: https://github.com/arnavpisces/opencode-sidebar/pkgs/npm/opencode-sidebar
 
 ### npm Docs
 
@@ -127,19 +125,6 @@ opencode-sidebar
 - `npm run verify`: typecheck, unit tests, and build
 - `npm run verify:tmux`: manual tmux integration checks in isolated temp workspaces
 - `npm run verify:release`: full maintainer-only release check
-
-## GitHub Packages
-
-This repo includes a GitHub Actions workflow at `.github/workflows/github-packages.yml`.
-
-Pushing a `v*` tag publishes a GitHub Packages npm package alias as `@arnavpisces/opencode-sidebar`.
-
-```bash
-git tag v0.1.1
-git push origin v0.1.1
-```
-
-The public npm package remains `opencode-sidebar`.
 
 ## Contribution
 
