@@ -40,38 +40,6 @@ The CLI checks for `tmux` and `opencode` at runtime. If either command is missin
 
 - npm package: https://www.npmjs.com/package/opencode-sidebar
 
-### npm Docs
-
-Install:
-
-```bash
-npm install -g opencode-sidebar
-```
-
-Run:
-
-```bash
-opencode-sidebar
-```
-
-Rename:
-
-```text
-Select a session and press e
-```
-
-Update:
-
-```bash
-npm update -g opencode-sidebar
-```
-
-Remove:
-
-```bash
-npm uninstall -g opencode-sidebar
-```
-
 ### Run from source
 
 ```bash
