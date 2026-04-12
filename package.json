@@ -1,6 +1,6 @@
 {
   "name": "opencode-sidebar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "tmux sidebar launcher for OpenCode",
   "type": "module",
   "license": "Apache-2.0",
