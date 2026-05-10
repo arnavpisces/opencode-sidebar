@@ -1,6 +1,6 @@
 {
   "name": "opencode-sidebar",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "tmux sidebar launcher for OpenCode",
   "type": "module",
   "license": "Apache-2.0",
@@ -27,6 +27,7 @@
     "dist",
     "scripts/system-dependencies.mjs",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "NOTICE"
   ],
@@ -44,7 +45,7 @@
     "launcher:tmux": "./bin/opencode-sidebar-tmux",
     "open:test": "bun run src/dev-open-session.ts",
     "prepack": "npm run verify",
-    "test": "bun test",
+    "test": "bun test test/*.test.ts",
     "test:tmux:cleanup": "./test/run-tmux-cleanup.sh",
     "test:tmux:flow": "./test/run-tmux-flow.sh",
     "test:tmux:sigint-cleanup": "./test/run-sidebar-sigint-cleanup.sh",

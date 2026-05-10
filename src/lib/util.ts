@@ -88,6 +88,43 @@ export function sanitizePastedText(input: string) {
   return input.replace(/[\r\n]+/g, "").replace(/\t+/g, " ")
 }
 
+type TextInputEditKey = {
+  backspace?: boolean
+  delete?: boolean
+  meta?: boolean
+  shift?: boolean
+}
+
+export type ParsedMouseInput = {
+  code: number
+  x: number
+  y: number
+  release: boolean
+}
+
+export function shouldClearTextInput(key: TextInputEditKey) {
+  return Boolean((key.meta && (key.backspace || key.delete)) || (key.shift && key.delete))
+}
+
+export function deleteTextInputValue(value: string, key: TextInputEditKey) {
+  if (shouldClearTextInput(key)) return ""
+  if (key.backspace || key.delete) return value.slice(0, -1)
+  return value
+}
+
+export function isMouseEscapeInput(input: string) {
+  return /(\x1b?\[<\d+;\d+;\d+[Mm])+/.test(input)
+}
+
+export function parseSgrMouseInput(input: string): ParsedMouseInput[] {
+  return [...input.matchAll(/\x1b?\[<(\d+);(\d+);(\d+)([Mm])/g)].map((match) => ({
+    code: Number(match[1]),
+    x: Number(match[2]),
+    y: Number(match[3]),
+    release: match[4] === "m",
+  }))
+}
+
 export function wrapTextHard(input: string, width: number) {
   if (width <= 0) return [] as string[]
   if (!input) return [""]

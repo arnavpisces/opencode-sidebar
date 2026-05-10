@@ -1,6 +1,7 @@
 export type PersistedState = {
   serverPort: number
   pinnedDirectories: string[]
+  themeID: string
 }
 
 export type ProjectRecord = {

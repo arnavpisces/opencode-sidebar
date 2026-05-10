@@ -4,13 +4,17 @@ import {
   findAnyWindowBySessionID,
   findBackgroundWindowBySessionID,
   getPreviewSessionMeta,
+  isMouseModeEnabled,
   isTmux,
   killSessionWindowBySessionID,
   listActiveSessionWindows,
   parkPreviewSession,
   pruneBackgroundSessions,
   renameSessionWindow,
+  resetCurrentPaneBackground,
   respawnPane,
+  setCurrentPaneBackground,
+  setPaneBackground,
   setPaneSession,
   setPreviewSession,
   setPaneTitle,
@@ -23,6 +27,7 @@ type OpenInput = {
   directory: string
   title: string
   baseUrl: string
+  background?: string
 }
 
 export function describeTerminalBackend(): TerminalBackendName {
@@ -59,6 +64,20 @@ export async function cleanupSidebarSessions(sessionIDs: Iterable<string>) {
 export async function getPreviewSessionID() {
   const preview = await getPreviewSessionMeta()
   return preview?.sessionID
+}
+
+export async function isTmuxMouseModeEnabled() {
+  return isMouseModeEnabled()
+}
+
+export async function setTerminalBackground(background: string) {
+  if (!isTmux()) return
+  await setCurrentPaneBackground(background)
+}
+
+export async function resetTerminalBackground() {
+  if (!isTmux()) return
+  await resetCurrentPaneBackground()
 }
 
 export async function openSessionWithPreferredTerminal(input: OpenInput): Promise<OpenResult> {
@@ -108,6 +127,10 @@ export async function openSessionWithPreferredTerminal(input: OpenInput): Promis
       title: previewSession.title,
     })
     rightPaneID = (await ensureTmuxLayout(input.directory)).rightPaneID
+  }
+
+  if (input.background) {
+    await setPaneBackground(rightPaneID, input.background)
   }
 
   await respawnPane(rightPaneID, input.directory, [

@@ -10,6 +10,7 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const entryPath = path.join(rootDir, "dist", "index.js")
 const packageJson = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"))
 const sessionName = "opencode-sidebar"
+const RESTART_DELAY_MS = 350
 
 function quoteShell(value) {
   return `'${value.replace(/'/g, `'"'"'`)}'`
@@ -37,23 +38,24 @@ function exitWithMissingDependencies() {
   return true
 }
 
-function spawnAndExit(command, args, options) {
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function spawnAndWait(command, args, options) {
+  return new Promise((resolve, reject) => {
   const child = spawn(command, args, {
     stdio: "inherit",
     ...options,
   })
 
   child.once("error", (error) => {
-    console.error(`[opencode-sidebar] Failed to start ${command}: ${error.message}`)
-    process.exit(1)
+    reject(error)
   })
 
   child.once("exit", (code, signal) => {
-    if (signal) {
-      process.kill(process.pid, signal)
-      return
-    }
-    process.exit(code ?? 0)
+    resolve({ code: code ?? 0, signal })
+  })
   })
 }
 
@@ -81,13 +83,50 @@ const runtimeEnv = {
   OPENCODE_SIDEBAR_BACKEND: "tmux",
 }
 
+async function runSidebarSupervised() {
+  let restartCount = 0
+
+  while (true) {
+    const result = await spawnAndWait(process.execPath, [entryPath], {
+      env: runtimeEnv,
+    }).catch((error) => {
+      console.error(`[opencode-sidebar] Failed to start sidebar runtime: ${error.message}`)
+      process.exit(1)
+    })
+
+    if (!result) return
+
+    if (result.signal) {
+      process.kill(process.pid, result.signal)
+      return
+    }
+
+    if (result.code === 0) {
+      process.exit(0)
+    }
+
+    restartCount += 1
+    console.error(`[opencode-sidebar] Sidebar exited unexpectedly with code ${result.code}. Restarting (${restartCount})...`)
+    await wait(RESTART_DELAY_MS)
+  }
+}
+
 if (!process.env.TMUX) {
-  const tmuxCommand = `OPENCODE_SIDEBAR_BACKEND=tmux ${quoteShell(process.execPath)} ${quoteShell(entryPath)}`
-  spawnAndExit("tmux", ["new-session", "-A", "-s", sessionName, "-f", "destroy-unattached=on", "-c", process.cwd(), tmuxCommand], {
+  const tmuxCommand = `while true; do OPENCODE_SIDEBAR_BACKEND=tmux ${quoteShell(process.execPath)} ${quoteShell(entryPath)}; code=$?; if [ "$code" -eq 0 ]; then exit 0; fi; printf '\n[opencode-sidebar] sidebar exited unexpectedly with code %s; restarting...\n' "$code"; sleep 0.35; done`
+  spawnAndWait("tmux", ["new-session", "-A", "-s", sessionName, "-f", "destroy-unattached=on", "-c", process.cwd(), tmuxCommand], {
     env: runtimeEnv,
   })
+    .then((result) => {
+      if (result.signal) {
+        process.kill(process.pid, result.signal)
+        return
+      }
+      process.exit(result.code)
+    })
+    .catch((error) => {
+      console.error(`[opencode-sidebar] Failed to start tmux: ${error.message}`)
+      process.exit(1)
+    })
 } else {
-  spawnAndExit(process.execPath, [entryPath], {
-    env: runtimeEnv,
-  })
+  void runSidebarSupervised()
 }

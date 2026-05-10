@@ -15,15 +15,19 @@ import {
 import { buildSnapshot } from "./model.js"
 import { SoundNotifier } from "./notifications.js"
 import { loadState, saveState, updateState } from "./state.js"
+import { getThemeScheme } from "./themes.js"
 import type { DirectoryRecord, OpenResult, ProjectRecord, SessionRecord, SessionRuntimeStatus, Snapshot } from "./types.js"
-import { assertDirectoryExists, normalizeDirectory, sleep } from "./util.js"
+import { assertDirectoryExists, directoryLabel, directorySubtitle, normalizeDirectory, sleep } from "./util.js"
 import {
   describeTerminalBackend,
   getPreviewSessionID,
+  isTmuxMouseModeEnabled,
   killSessionWindow,
   listActiveSessions,
   openSessionWithPreferredTerminal,
+  resetTerminalBackground as resetTerminalBackgroundStyle,
   retitleSessionWindow,
+  setTerminalBackground as setTerminalBackgroundStyle,
 } from "./terminal.js"
 
 type OpencodeClient = ReturnType<typeof createOpencodeClient>
@@ -31,6 +35,13 @@ type ReadyState = {
   client: OpencodeClient
   baseUrl: string
   port: number
+}
+
+type DirectoryAutocompleteOption = {
+  directory: string
+  label: string
+  subtitle: string
+  pinned: boolean
 }
 
 async function isHealthy(port: number) {
@@ -134,6 +145,69 @@ async function fetchProjects(client: OpencodeClient) {
     worktree: project.worktree,
     sandboxes: project.sandboxes ?? [],
   }))
+}
+
+function normalizeDirectoryQuery(rawQuery: string) {
+  const trimmed = rawQuery.trim()
+  if (!trimmed) return { query: "", absolute: undefined }
+
+  const expanded = trimmed.startsWith("~/") ? path.join(process.env.HOME ?? "", trimmed.slice(2)) : trimmed
+  if (path.isAbsolute(expanded)) {
+    return {
+      query: path.basename(expanded),
+      absolute: expanded,
+    }
+  }
+
+  return {
+    query: trimmed,
+    absolute: undefined,
+  }
+}
+
+function fuzzyDirectoryScore(candidate: string, query: string) {
+  const lowerCandidate = candidate.toLowerCase()
+  const lowerQuery = query.toLowerCase()
+  if (!lowerQuery) return 100
+  if (lowerCandidate === lowerQuery) return 500
+  if (lowerCandidate.startsWith(lowerQuery)) return 400 - lowerCandidate.length
+
+  const substringIndex = lowerCandidate.indexOf(lowerQuery)
+  if (substringIndex >= 0) return 300 - substringIndex
+
+  let queryIndex = 0
+  for (const char of lowerCandidate) {
+    if (char === lowerQuery[queryIndex]) {
+      queryIndex += 1
+      if (queryIndex === lowerQuery.length) return 200 - lowerCandidate.length
+    }
+  }
+
+  return -1
+}
+
+async function listMatchingDirectories(input: { root: string; fragment: string; limit: number }) {
+  const entries = await fs.readdir(input.root, { withFileTypes: true }).catch(() => [])
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => ({
+      name: entry.name,
+      directory: path.join(input.root, entry.name),
+      score: fuzzyDirectoryScore(entry.name, input.fragment),
+    }))
+    .filter((entry) => entry.score >= 0)
+    .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
+    .slice(0, input.limit)
+    .map((entry) => entry.directory)
+}
+
+function optionFromDirectory(directory: string, pinnedDirectories: string[]) {
+  return {
+    directory,
+    label: directoryLabel(directory),
+    subtitle: directorySubtitle(directory),
+    pinned: pinnedDirectories.includes(directory),
+  } satisfies DirectoryAutocompleteOption
 }
 
 async function fetchSessionStatuses(client: OpencodeClient) {
@@ -282,6 +356,38 @@ export class LauncherService {
     return directory
   }
 
+  async autocompleteDirectories(rawQuery: string, limit = 12) {
+    const [{ client }, state] = await Promise.all([this.ensureReady(), loadState()])
+    const normalized = normalizeDirectoryQuery(rawQuery)
+
+    if (normalized.absolute) {
+      const exactDirectory = path.resolve(normalized.absolute)
+      const exactStats = await fs.stat(exactDirectory).catch(() => undefined)
+      const searchRoot = exactStats?.isDirectory() ? exactDirectory : path.dirname(exactDirectory)
+      const fragment = exactStats?.isDirectory() ? "" : path.basename(exactDirectory)
+      const localResults = await listMatchingDirectories({
+        root: searchRoot,
+        fragment,
+        limit,
+      })
+
+      const exactMatch = exactStats?.isDirectory() ? [exactDirectory] : []
+      return [...new Set([...exactMatch, ...localResults])].map((item) => optionFromDirectory(item, state.pinnedDirectories)).slice(0, limit)
+    }
+
+    const response = await client.find.files({
+      query: normalized.query,
+      type: "directory",
+      limit,
+    })
+    const results = ((response.data ?? []) as string[])
+      .filter((item) => item.endsWith("/"))
+      .map((item) => item.replace(/\/+$/, ""))
+      .map((item) => optionFromDirectory(normalizeDirectory(item), state.pinnedDirectories))
+
+    return results
+  }
+
   async pinDirectory(rawDirectory: string) {
     return this.addProjectDirectory(rawDirectory)
   }
@@ -293,20 +399,33 @@ export class LauncherService {
     }))
   }
 
+  async getThemeID() {
+    return (await loadState()).themeID
+  }
+
+  async setThemeID(themeID: string) {
+    await updateState((state) => ({
+      ...state,
+      themeID,
+    }))
+    return themeID
+  }
+
   async openSession(directory: string, session: SessionRecord): Promise<OpenResult> {
-    const { baseUrl } = await this.ensureReady()
+    const [{ baseUrl }, state] = await Promise.all([this.ensureReady(), loadState()])
     const result = await openSessionWithPreferredTerminal({
       sessionID: session.id,
       directory,
       title: session.title,
       baseUrl,
+      background: getThemeScheme(state.themeID).base.background,
     })
     this.launchedSessionIDs.add(session.id)
     return result
   }
 
   async openNewSession(directory: string): Promise<OpenResult> {
-    const { client, baseUrl } = await this.ensureReady()
+    const [{ client, baseUrl }, state] = await Promise.all([this.ensureReady(), loadState()])
     const result = await client.session.create({ directory })
     if (!result.data) {
       throw new Error("Failed to create a new session")
@@ -317,6 +436,7 @@ export class LauncherService {
       directory,
       title: session.title,
       baseUrl,
+      background: getThemeScheme(state.themeID).base.background,
     })
     this.launchedSessionIDs.add(session.id)
     return openResult
@@ -358,6 +478,18 @@ export class LauncherService {
       this.launchedSessionIDs.delete(sessionID)
     }
     return killed
+  }
+
+  async isMouseModeEnabled() {
+    return isTmuxMouseModeEnabled().catch(() => false)
+  }
+
+  async setTerminalBackground(background: string) {
+    await setTerminalBackgroundStyle(background).catch(() => {})
+  }
+
+  async resetTerminalBackground() {
+    await resetTerminalBackgroundStyle().catch(() => {})
   }
 
   async shutdown() {

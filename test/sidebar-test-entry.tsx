@@ -15,9 +15,11 @@ if (!controlFile) {
 const service = new LauncherService()
 const testControlAbort = new AbortController()
 let cleanedUp = false
+let fatalExitStarted = false
+process.exitCode = 1
 
 function renderApp() {
-  return <App service={service} onCleanup={cleanup} />
+  return <App service={service} onCleanup={cleanup} onRequestExit={() => { process.exitCode = 0 }} />
 }
 
 async function cleanup() {
@@ -74,15 +76,22 @@ process.on("SIGTERM", () => {
   void cleanup().finally(() => process.exit(0))
 })
 
-process.on("exit", () => {
-  void cleanup()
-})
+function startFatalExit(error: unknown) {
+  if (fatalExitStarted) return
+  fatalExitStarted = true
+  const detail = error instanceof Error ? error.stack ?? error.message : String(error)
+  console.error(`[opencode-sidebar:test] Fatal error\n${detail}`)
+  void cleanup().finally(() => process.exit(1))
+}
+
+process.on("uncaughtException", startFatalExit)
+process.on("unhandledRejection", startFatalExit)
 
 void startTestControlChannel(controlFile, testControlAbort.signal).catch(() => {})
 
-const instance = render(renderApp(), { exitOnCtrlC: false })
-
-process.stdout.on("resize", () => {
-  instance.clear()
-  instance.rerender(renderApp())
+const instance = render(renderApp(), {
+  exitOnCtrlC: false,
+  kittyKeyboard: {
+    mode: "auto",
+  },
 })

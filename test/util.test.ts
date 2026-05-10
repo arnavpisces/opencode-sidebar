@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test"
-import { relativeTime, sessionWorkspace, sessionWindowTitle, truncate, wrapTextHard } from "../src/lib/util.js"
+import {
+  deleteTextInputValue,
+  isMouseEscapeInput,
+  parseSgrMouseInput,
+  relativeTime,
+  sessionWorkspace,
+  sessionWindowTitle,
+  truncate,
+  wrapTextHard,
+} from "../src/lib/util.js"
 
 describe("util helpers", () => {
   test("relativeTime uses compact units", () => {
@@ -28,6 +37,22 @@ describe("util helpers", () => {
       "op/Personal/",
       "really-long-",
       "folder-name",
+    ])
+  })
+
+  test("deleteTextInputValue clears the whole input for option-delete and shift-delete", () => {
+    expect(deleteTextInputValue("Rename me", { meta: true, delete: true })).toBe("")
+    expect(deleteTextInputValue("/tmp/project", { meta: true, backspace: true })).toBe("")
+    expect(deleteTextInputValue("Rename me", { shift: true, delete: true })).toBe("")
+    expect(deleteTextInputValue("Rename me", { backspace: true })).toBe("Rename m")
+  })
+
+  test("mouse helpers recognize and parse sgr mouse input", () => {
+    const input = "\u001b[<0;12;18M\u001b[<0;12;18m"
+    expect(isMouseEscapeInput(input)).toBe(true)
+    expect(parseSgrMouseInput(input)).toEqual([
+      { code: 0, x: 12, y: 18, release: false },
+      { code: 0, x: 12, y: 18, release: true },
     ])
   })
 })

@@ -1,11 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Box, Text, useApp, useInput, useStdout } from "ink"
+import { Box, Text, useApp, useInput, useStdout, useStdin } from "ink"
 import { STATUS_MESSAGE_HOLD_MS, WINDOW_POLL_INTERVAL_MS } from "./lib/constants.js"
 import { LauncherService } from "./lib/opencode.js"
+import { resetTerminalBackground, writeTerminalBackground } from "./lib/terminal-theme.js"
+import { DEFAULT_THEME_ID, getThemeScheme, THEMES, type ThemeScheme } from "./lib/themes.js"
 import type { DirectoryRecord, SidebarRow, Snapshot } from "./lib/types.js"
-import { isPrintable, relativeTime, sanitizePastedText, truncate, wrapTextHard } from "./lib/util.js"
+import {
+  deleteTextInputValue,
+  isMouseEscapeInput,
+  isPrintable,
+  parseSgrMouseInput,
+  relativeTime,
+  sanitizePastedText,
+  truncate,
+  wrapTextHard,
+} from "./lib/util.js"
 
-type Mode = "browse" | "search" | "add-project" | "rename-session"
+type Mode = "browse" | "search" | "add-project" | "rename-session" | "theme"
 type DeleteTarget = {
   sessionID: string
   directory: string
@@ -24,6 +35,24 @@ type RenameTarget = {
   title: string
 }
 
+type AddProjectOption = {
+  directory: string
+  label: string
+  subtitle: string
+  pinned: boolean
+}
+
+type ThemeOption = {
+  id: string
+  name: string
+}
+
+type ModalLineEntry = {
+  line: string
+  color?: TextColor
+  backgroundColor?: TextColor
+}
+
 type BorderColor = React.ComponentProps<typeof Box>["borderColor"]
 type TextColor = React.ComponentProps<typeof Text>["color"]
 
@@ -36,6 +65,9 @@ const SUPER_HAPPY_FACE = "(◕‿◕)"
 const SLEEPING_FACE = "(-ᴥ-)"
 const SAD_FACE = "(◕︵◕)"
 const UNWELL_FACE = "(@_@)"
+const RUNNING_FACES = ["(•̀ᴗ•́)", "(ง'̀-'́)ง", "(•̀ㅂ•́)و"]
+const IDLE_FACES = ["(◕ᴥ◕)", "(◕ᴗ◕)", "(•ᴗ•)"]
+const SLEEP_FACES = ["(-ᴥ-)", "(-_-) zZ", "(˘▾˘)~"]
 
 function rowKey(row: SidebarRow) {
   return row.key
@@ -61,6 +93,24 @@ function rowMatchesQuery(row: SidebarRow, query: string) {
   )
 }
 
+function addProjectOptionMatches(option: AddProjectOption, query: string) {
+  if (!query) return true
+  const lower = query.toLowerCase()
+  return (
+    option.label.toLowerCase().includes(lower) ||
+    option.directory.toLowerCase().includes(lower) ||
+    option.subtitle.toLowerCase().includes(lower)
+  )
+}
+
+function optionDisplay(option: AddProjectOption) {
+  return `${option.directory}${option.pinned ? " [PINNED]" : ""}`
+}
+
+function themeOptionDisplay(option: ThemeOption) {
+  return option.name
+}
+
 function buildRows(snapshot: Snapshot | null, expanded: Record<string, boolean>, query: string): SidebarRow[] {
   const rows: SidebarRow[] = []
   const addProjectRow: SidebarRow = {
@@ -68,7 +118,7 @@ function buildRows(snapshot: Snapshot | null, expanded: Record<string, boolean>,
     kind: "action",
     action: "add-project",
     label: "Add project folder",
-    detail: "Enter an absolute or ~/ path",
+    detail: "Autocomplete directories or enter a path",
   }
 
   if (rowMatchesQuery(addProjectRow, query)) {
@@ -155,6 +205,16 @@ function minimumWidth(value: number) {
   return Math.max(1, value)
 }
 
+function fitLine(input: string, width: number) {
+  return truncate(input, width).padEnd(width, " ")
+}
+
+function dropdownOptionLines(marker: string, label: string, width: number) {
+  const gutter = `${marker} `
+  const contentWidth = minimumWidth(width - gutter.length)
+  return wrapTextHard(label, contentWidth).map((line, index) => `${index === 0 ? gutter : " ".repeat(gutter.length)}${line}`)
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
 }
@@ -223,36 +283,40 @@ function mascotTitle(input: {
   frame: number
   busy: boolean
   activeCount: number
+  recentlyActive: boolean
   error?: string
   mode: Mode
+  theme: ThemeScheme
 }) {
-  const attentionNeeded = Boolean(input.error) || input.mode === "add-project"
+  const attentionNeeded = Boolean(input.error) || input.mode === "add-project" || input.mode === "theme"
   const face = input.error
     ? UNWELL_FACE
     : attentionNeeded
       ? SAD_FACE
       : input.busy
-        ? SUPER_HAPPY_FACE
-        : input.activeCount > 0
-          ? HAPPY_BREATHING_FACES[input.frame % HAPPY_BREATHING_FACES.length]
-          : SLEEPING_FACE
+        ? RUNNING_FACES[input.frame % RUNNING_FACES.length]
+        : input.recentlyActive || input.activeCount > 0
+          ? IDLE_FACES[input.frame % IDLE_FACES.length]
+          : SLEEP_FACES[input.frame % SLEEP_FACES.length]
 
   const mood = input.error
     ? "Not feeling great"
     : attentionNeeded
-      ? "Needs attention"
+      ? input.mode === "theme"
+        ? "Picking a palette"
+        : "Needs attention"
       : input.busy
-        ? "Super happy"
-        : input.activeCount > 0
-          ? "Happy and breathing"
+        ? "Locked in"
+        : input.recentlyActive || input.activeCount > 0
+          ? "On watch"
           : "Sleeping"
 
-  const wideTitle = `:: OPENCODE SIDEBAR v0.1 :: ${face} ${mood}`
+  const wideTitle = `:: OPENCODE SIDEBAR :: ${face} ${mood} :: ${input.theme.name}`
   const compactTitle = `:: OPENCODE SIDEBAR :: ${face}`
 
   if (input.compact) return compactTitle
   if (wideTitle.length <= input.width) return wideTitle
-  const mediumTitle = `:: OPENCODE SIDEBAR v0.1 :: ${face}`
+  const mediumTitle = `:: OPENCODE SIDEBAR :: ${face} ${mood}`
   if (mediumTitle.length <= input.width) return mediumTitle
   return compactTitle
 }
@@ -268,7 +332,7 @@ function Panel(props: {
   return (
     <Box width={width + 4} flexDirection="column" borderStyle="single" borderColor={borderColor} paddingX={1}>
       <Text color={titleColor} bold>
-        {truncate(title, width)}
+        {fitLine(title, width)}
       </Text>
       {children}
     </Box>
@@ -278,11 +342,17 @@ function Panel(props: {
 export function App({
   service,
   onCleanup,
+  onRequestExit,
+  initialThemeID = DEFAULT_THEME_ID,
 }: {
   service: LauncherService
   onCleanup?: () => Promise<void> | void
+  onRequestExit?: () => void
+  initialThemeID?: string
 }) {
   const { exit } = useApp()
+  const { stdout } = useStdout()
+  const { stdin, setRawMode } = useStdin()
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [selectedKey, setSelectedKey] = useState<string>()
@@ -295,7 +365,15 @@ export function App({
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>()
   const [killTarget, setKillTarget] = useState<KillTarget>()
   const [renameTarget, setRenameTarget] = useState<RenameTarget>()
+  const [addProjectOptionIndex, setAddProjectOptionIndex] = useState(0)
+  const [addProjectOptions, setAddProjectOptions] = useState<AddProjectOption[]>([])
+  const [addProjectLoading, setAddProjectLoading] = useState(false)
+  const [themeID, setThemeID] = useState(initialThemeID)
+  const [themeOptionIndex, setThemeOptionIndex] = useState(0)
+  const [mouseEnabled, setMouseEnabled] = useState(false)
   const stickyStatusUntilRef = useRef(0)
+  const lastInteractionAtRef = useRef(Date.now())
+  const lastMouseUpRef = useRef<{ key: string; at: number } | undefined>(undefined)
   const { width, height } = useTerminalSize()
   const now = useNowTick()
   const frame = useFrame(160)
@@ -309,6 +387,10 @@ export function App({
   const panelOuterWidth = minimumWidth(width - 2)
   const panelTextWidth = minimumWidth(panelOuterWidth - 4)
   const sectionTextWidth = minimumWidth(width - 2)
+  const themeOptions = useMemo(() => THEMES.map((item) => ({ id: item.id, name: item.name })), [])
+  const selectedThemeOption = themeOptions[Math.max(0, Math.min(themeOptionIndex, themeOptions.length - 1))]
+  const previewThemeID = mode === "theme" ? selectedThemeOption?.id ?? themeID : themeID
+  const theme = useMemo(() => getThemeScheme(previewThemeID), [previewThemeID])
   const rows = useMemo(() => buildRows(snapshot, expanded, mode === "search" ? inputValue : ""), [expanded, inputValue, mode, snapshot])
   const selectedIndex = useMemo(() => {
     if (!rows.length) return 0
@@ -318,8 +400,11 @@ export function App({
   }, [rows, selectedKey])
   const selectedRow = rows[selectedIndex]
   const previewSession = useMemo(() => findSessionInSnapshot(snapshot, snapshot?.previewSessionID), [snapshot])
+  const addProjectSelectedOption = addProjectOptions[Math.max(0, Math.min(addProjectOptionIndex, addProjectOptions.length - 1))]
 
   const closeApp = useCallback(async () => {
+    lastInteractionAtRef.current = Date.now()
+    onRequestExit?.()
     try {
       if (onCleanup) {
         await onCleanup()
@@ -330,7 +415,7 @@ export function App({
       // Best-effort cleanup only.
     }
     exit()
-  }, [exit, onCleanup, service])
+  }, [exit, onCleanup, onRequestExit, service])
 
   const setTemporaryStatus = useCallback((message: string) => {
     const nextStickyStatusUntil = Date.now() + STATUS_MESSAGE_HOLD_MS
@@ -339,12 +424,22 @@ export function App({
   }, [])
 
   const beginAddProject = useCallback(() => {
+    lastInteractionAtRef.current = Date.now()
     setMode("add-project")
     setInputValue("")
-    setTemporaryStatus("Enter an absolute or ~/ path for the new project folder")
+    setAddProjectOptionIndex(0)
+    setTemporaryStatus("Type to autocomplete directories or enter an absolute or ~/ path")
   }, [setTemporaryStatus])
 
+  const beginThemeMenu = useCallback(() => {
+    lastInteractionAtRef.current = Date.now()
+    setMode("theme")
+    setThemeOptionIndex(Math.max(0, themeOptions.findIndex((option) => option.id === themeID)))
+    setTemporaryStatus("Choose a sidebar theme")
+  }, [setTemporaryStatus, themeID, themeOptions])
+
   const beginRenameSession = useCallback(() => {
+    lastInteractionAtRef.current = Date.now()
     if (!selectedRow || selectedRow.kind !== "session") {
       setTemporaryStatus("Select a session to rename")
       return
@@ -436,8 +531,111 @@ export function App({
     }
   }, [rows, selectedIndex, selectedRow, snapshot])
 
+  useEffect(() => {
+    if (mode !== "add-project") return
+    setAddProjectOptionIndex((current) => {
+      if (addProjectOptions.length === 0) return 0
+      return clamp(current, 0, addProjectOptions.length - 1)
+    })
+  }, [addProjectOptions.length, mode])
+
+  useEffect(() => {
+    let cancelled = false
+    void service
+      .getThemeID()
+      .then((nextThemeID) => {
+        if (!cancelled) {
+          setThemeID(nextThemeID)
+          setThemeOptionIndex(Math.max(0, THEMES.findIndex((item) => item.id === nextThemeID)))
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [service])
+
+  useEffect(() => {
+    writeTerminalBackground(stdout, theme.base.background)
+    void service.setTerminalBackground(theme.base.background)
+  }, [service, stdout, theme.base.background])
+
+  useEffect(() => {
+    return () => {
+      resetTerminalBackground(stdout)
+      void service.resetTerminalBackground()
+    }
+  }, [service, stdout])
+
+  useEffect(() => {
+    if (mode === "add-project") {
+      setAddProjectOptionIndex(0)
+    }
+  }, [inputValue, mode])
+
+  useEffect(() => {
+    if (mode !== "add-project") {
+      setAddProjectOptions([])
+      setAddProjectLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setAddProjectLoading(true)
+    void service
+      .autocompleteDirectories(inputValue)
+      .then((options) => {
+        if (cancelled) return
+        setAddProjectOptions(inputValue.trim() ? options : options.filter((option) => addProjectOptionMatches(option, inputValue)))
+        setAddProjectLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setAddProjectOptions([])
+        setAddProjectLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [inputValue, mode, service])
+
+  useEffect(() => {
+    let cancelled = false
+    void service
+      .isMouseModeEnabled()
+      .then((enabled) => {
+        if (!cancelled) {
+          setMouseEnabled(enabled)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [service, snapshot?.loadedAt])
+
+  useEffect(() => {
+    if (!stdout) return
+    if (!mouseEnabled) return
+    try {
+      stdout.write("\u001b[?1000h\u001b[?1006h")
+    } catch {
+      // Mouse reporting is best-effort only.
+    }
+
+    return () => {
+      try {
+        stdout.write("\u001b[?1000l\u001b[?1006l")
+      } catch {
+        // Ignore teardown errors while exiting the app.
+      }
+    }
+  }, [mouseEnabled, stdout])
+
   const move = useCallback(
     (direction: number) => {
+      lastInteractionAtRef.current = Date.now()
       if (!rows.length) return
       const next = (selectedIndex + direction + rows.length) % rows.length
       setSelectedKey(rowKey(rows[next]))
@@ -446,6 +644,7 @@ export function App({
   )
 
   const toggleDirectory = useCallback((record: DirectoryRecord, next?: boolean) => {
+    lastInteractionAtRef.current = Date.now()
     setExpanded((current) => ({
       ...current,
       [record.directory]: next ?? !current[record.directory],
@@ -453,8 +652,41 @@ export function App({
   }, [])
 
   const commitInput = useCallback(async () => {
+    lastInteractionAtRef.current = Date.now()
+    if (mode === "theme" && selectedThemeOption) {
+      setBusy(`Applying ${selectedThemeOption.name}...`)
+      try {
+        await service.setThemeID(selectedThemeOption.id)
+        setThemeID(selectedThemeOption.id)
+        setTemporaryStatus(`Theme set to ${selectedThemeOption.name}`)
+        setMode("browse")
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setBusy(undefined)
+      }
+      return
+    }
+
     const value = inputValue.trim()
     if (!value) {
+      if (mode === "add-project" && addProjectSelectedOption) {
+        setBusy(`Adding ${addProjectSelectedOption.directory}...`)
+        try {
+          const directory = await service.addProjectDirectory(addProjectSelectedOption.directory)
+          setTemporaryStatus(`Added project folder ${directory}`)
+          setMode("browse")
+          setInputValue("")
+          setAddProjectOptionIndex(0)
+          await refresh(`dir:${directory}`)
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : String(cause))
+        } finally {
+          setBusy(undefined)
+        }
+        return
+      }
+
       setMode("browse")
       setInputValue("")
       setRenameTarget(undefined)
@@ -462,12 +694,14 @@ export function App({
     }
 
     if (mode === "add-project") {
-      setBusy(`Adding ${value}...`)
+      const nextDirectory = addProjectSelectedOption?.directory ?? value
+      setBusy(`Adding ${nextDirectory}...`)
       try {
-        const directory = await service.addProjectDirectory(value)
+        const directory = await service.addProjectDirectory(nextDirectory)
         setTemporaryStatus(`Added project folder ${directory}`)
         setMode("browse")
         setInputValue("")
+        setAddProjectOptionIndex(0)
         await refresh(`dir:${directory}`)
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause))
@@ -491,21 +725,23 @@ export function App({
       } finally {
         setBusy(undefined)
       }
+      return
     }
-  }, [inputValue, mode, refresh, renameTarget, service, setTemporaryStatus])
 
-  const openSelection = useCallback(async () => {
-    if (!selectedRow) return
-    if (selectedRow.kind === "action") {
+  }, [addProjectSelectedOption, inputValue, mode, refresh, renameTarget, selectedThemeOption, service, setTemporaryStatus])
+
+  const openRow = useCallback(async (row: SidebarRow) => {
+    lastInteractionAtRef.current = Date.now()
+    if (row.kind === "action") {
       beginAddProject()
       return
     }
-    setBusy(selectedRow.kind === "session" ? `Opening ${selectedRow.session.title || "New session"}...` : `Opening ${selectedRow.record.label}...`)
+    setBusy(row.kind === "session" ? `Opening ${row.session.title || "New session"}...` : `Opening ${row.record.label}...`)
     try {
       const result =
-        selectedRow.kind === "session"
-          ? await service.openSession(selectedRow.record.directory, selectedRow.session)
-          : await service.openDirectory(selectedRow.record)
+        row.kind === "session"
+          ? await service.openSession(row.record.directory, row.session)
+          : await service.openDirectory(row.record)
       setTemporaryStatus(describeOpenResult(result))
       setMode("browse")
       setInputValue("")
@@ -515,9 +751,15 @@ export function App({
     } finally {
       setBusy(undefined)
     }
-  }, [beginAddProject, refresh, selectedRow, setTemporaryStatus])
+  }, [beginAddProject, refresh, service, setTemporaryStatus])
+
+  const openSelection = useCallback(async () => {
+    if (!selectedRow) return
+    await openRow(selectedRow)
+  }, [openRow, selectedRow])
 
   const openLatestOrCreate = useCallback(async () => {
+    lastInteractionAtRef.current = Date.now()
     if (!selectedRow) return
     if (selectedRow.kind === "action") {
       beginAddProject()
@@ -539,6 +781,7 @@ export function App({
   }, [beginAddProject, refresh, selectedRow, setTemporaryStatus])
 
   const createNewSession = useCallback(async () => {
+    lastInteractionAtRef.current = Date.now()
     if (!selectedRow) return
     if (selectedRow.kind === "action") {
       beginAddProject()
@@ -557,6 +800,7 @@ export function App({
   }, [beginAddProject, refresh, selectedRow, setTemporaryStatus])
 
   const unpinSelection = useCallback(async () => {
+    lastInteractionAtRef.current = Date.now()
     if (!selectedRow || selectedRow.kind !== "directory" || !selectedRow.record.pinned) return
     setBusy(`Removing ${selectedRow.record.label} from pins...`)
     try {
@@ -571,6 +815,7 @@ export function App({
   }, [refresh, selectedRow, setTemporaryStatus])
 
   const requestDeleteSelection = useCallback(() => {
+    lastInteractionAtRef.current = Date.now()
     if (!selectedRow || selectedRow.kind !== "session") {
       setTemporaryStatus("Select a session to delete")
       return
@@ -583,6 +828,7 @@ export function App({
   }, [selectedRow, setTemporaryStatus])
 
   const confirmDeleteSelection = useCallback(async () => {
+    lastInteractionAtRef.current = Date.now()
     if (!deleteTarget) return
     const target = deleteTarget
     setDeleteTarget(undefined)
@@ -600,12 +846,14 @@ export function App({
   }, [deleteTarget, refresh, setTemporaryStatus])
 
   const cancelDeleteSelection = useCallback(() => {
+    lastInteractionAtRef.current = Date.now()
     if (!deleteTarget) return
     setDeleteTarget(undefined)
     setTemporaryStatus("Delete cancelled")
   }, [deleteTarget, setTemporaryStatus])
 
   const requestKillSelection = useCallback(() => {
+    lastInteractionAtRef.current = Date.now()
     if (!selectedRow || selectedRow.kind !== "session") {
       setTemporaryStatus("Select a session to kill")
       return
@@ -622,6 +870,7 @@ export function App({
   }, [selectedRow, setTemporaryStatus])
 
   const confirmKillSelection = useCallback(async () => {
+    lastInteractionAtRef.current = Date.now()
     if (!killTarget) return
     const target = killTarget
     setKillTarget(undefined)
@@ -643,12 +892,14 @@ export function App({
   }, [killTarget, refresh, setTemporaryStatus])
 
   const cancelKillSelection = useCallback(() => {
+    lastInteractionAtRef.current = Date.now()
     if (!killTarget) return
     setKillTarget(undefined)
     setTemporaryStatus("Kill cancelled")
   }, [killTarget, setTemporaryStatus])
 
   const cancelRenameSelection = useCallback(() => {
+    lastInteractionAtRef.current = Date.now()
     if (!renameTarget && mode !== "rename-session") return
     setRenameTarget(undefined)
     setMode("browse")
@@ -656,13 +907,25 @@ export function App({
     setTemporaryStatus("Rename cancelled")
   }, [mode, renameTarget, setTemporaryStatus])
 
+  const cancelThemeSelection = useCallback(() => {
+    lastInteractionAtRef.current = Date.now()
+    if (mode !== "theme") return
+    setMode("browse")
+    setTemporaryStatus("Theme selection cancelled")
+  }, [mode, setTemporaryStatus])
+
   useInput(
     (input, key) => {
       const loweredInput = input.toLowerCase()
       const isInterrupt = input === "\u0003" || (key.ctrl && input === "c")
+      lastInteractionAtRef.current = Date.now()
 
       if (isInterrupt) {
         void closeApp()
+        return
+      }
+
+      if (isMouseEscapeInput(input)) {
         return
       }
 
@@ -698,7 +961,7 @@ export function App({
           return
         }
         if (key.backspace || key.delete) {
-          setInputValue((current) => current.slice(0, -1))
+          setInputValue((current) => deleteTextInputValue(current, key))
           return
         }
         const pasted = sanitizePastedText(input)
@@ -730,12 +993,29 @@ export function App({
             return
           }
         }
+        if (mode === "add-project") {
+          if (key.upArrow) {
+            setAddProjectOptionIndex((current) => {
+              if (addProjectOptions.length === 0) return 0
+              return (current - 1 + addProjectOptions.length) % addProjectOptions.length
+            })
+            return
+          }
+          if (key.downArrow) {
+            setAddProjectOptionIndex((current) => {
+              if (addProjectOptions.length === 0) return 0
+              return (current + 1) % addProjectOptions.length
+            })
+            return
+          }
+        }
         if (key.escape) {
           if (mode === "search" && inputValue) {
             setInputValue("")
           } else {
             setMode("browse")
             setInputValue("")
+            setAddProjectOptionIndex(0)
             setTemporaryStatus("Ready")
           }
           return
@@ -745,11 +1025,31 @@ export function App({
             void openSelection()
             return
           }
+          if (!inputValue.trim() && addProjectSelectedOption) {
+            setBusy(`Adding ${addProjectSelectedOption.directory}...`)
+            void service
+              .addProjectDirectory(addProjectSelectedOption.directory)
+              .then(async (directory) => {
+                setTemporaryStatus(`Added project folder ${directory}`)
+                setMode("browse")
+                setInputValue("")
+                setAddProjectOptionIndex(0)
+                await refresh(`dir:${directory}`)
+              })
+              .catch((cause) => {
+                setError(cause instanceof Error ? cause.message : String(cause))
+              })
+              .finally(() => {
+                setBusy(undefined)
+              })
+            return
+          }
+
           void commitInput()
           return
         }
         if (key.backspace || key.delete) {
-          setInputValue((current) => current.slice(0, -1))
+          setInputValue((current) => deleteTextInputValue(current, key))
           return
         }
         const pasted = sanitizePastedText(input)
@@ -759,6 +1059,26 @@ export function App({
         }
         if (isPrintable(input)) {
           setInputValue((current) => current + input)
+        }
+        return
+      }
+
+      if (mode === "theme") {
+        if (key.escape) {
+          cancelThemeSelection()
+          return
+        }
+        if (key.return) {
+          void commitInput()
+          return
+        }
+        if (key.upArrow) {
+          setThemeOptionIndex((current) => (current - 1 + themeOptions.length) % themeOptions.length)
+          return
+        }
+        if (key.downArrow) {
+          setThemeOptionIndex((current) => (current + 1) % themeOptions.length)
+          return
         }
         return
       }
@@ -775,6 +1095,10 @@ export function App({
       }
       if (input === "a") {
         beginAddProject()
+        return
+      }
+      if (input === "t") {
+        beginThemeMenu()
         return
       }
       if (input === "x") {
@@ -836,6 +1160,7 @@ export function App({
   const sessionCount = snapshot?.directories.reduce((count, record) => count + record.sessions.length, 0) ?? 0
   const activeCount = snapshot?.activeSessions.length ?? 0
   const hasWorkingSessions = snapshot?.directories.some((record) => record.sessions.some((session) => sessionIsWorking(session.status))) ?? false
+  const recentlyActive = Date.now() - lastInteractionAtRef.current < 45_000
 
   const detail = useMemo(() => {
     if (!selectedRow) return "No project selected"
@@ -860,14 +1185,26 @@ export function App({
     frame,
     busy: hasWorkingSessions,
     activeCount,
+    recentlyActive,
     error,
     mode,
+    theme,
   })
   const activityGlyph = hasWorkingSessions ? liveGlyph : activeCount > 0 ? "|" : "."
   const statusTitle = `STATUS / MATRIX [${activityGlyph}]`
   const showAddProjectModal = mode === "add-project"
   const showRenameSessionModal = mode === "rename-session"
+  const showThemeModal = mode === "theme"
   const showToolsPanel = !compactLayout || (!deleteTarget && !killTarget)
+  const addProjectDropdownLimit = compactLayout ? 4 : 6
+  const visibleAddProjectOptions = useMemo(
+    () => windowRows(addProjectOptions, addProjectOptionIndex, addProjectDropdownLimit),
+    [addProjectDropdownLimit, addProjectOptionIndex, addProjectOptions],
+  )
+  const addProjectFirstVisibleIndex = useMemo(() => {
+    if (!visibleAddProjectOptions.length) return 0
+    return addProjectOptions.findIndex((option) => option.directory === visibleAddProjectOptions[0]?.directory)
+  }, [addProjectOptions, visibleAddProjectOptions])
   const apiState = snapshot ? "CONNECTED" : error ? "DEGRADED" : "BOOTING"
   const statusLines = compactLayout
     ? [
@@ -884,21 +1221,73 @@ export function App({
   const statusMessageText = error ? `STATE      ERROR :: ${error}` : busy ? `STATE      WORK :: ${busy} [${spinner}]` : `STATE      LINK :: ${status}`
   const statusMessageLines = wrapTextHard(statusMessageText, panelTextWidth)
   const toolsLines = wrapTextHard(
-    "[Enter] Load  [N] New  [E] Rename  [D] Delete  [K] Kill  [/] Find  [A] Add  [Space] Expand  [R] Refresh  [Q] Quit  [Ctrl-b + Arrow] Move panes",
+    `[Enter] Load  [Double-click] Open  [N] New  [E] Rename  [D] Delete  [K] Kill  [/] Find  [A] Add  [T] Theme  [Space] Expand  [R] Refresh  [Q] Quit  [Mouse] ${mouseEnabled ? "Click + arrow toggle enabled" : "Enable tmux mouse to click rows"}`,
     panelTextWidth,
   )
-  const addProjectLines = showAddProjectModal
+  const addProjectLineEntries: ModalLineEntry[] = showAddProjectModal
     ? [
-        ...wrapTextHard(`Path :: ${inputValue}${inputCursor}`, panelTextWidth),
-        ...wrapTextHard("Paste an absolute path or use ~/ to add a folder to the sidebar.", panelTextWidth),
-        ...wrapTextHard("[Enter] Add folder  [Esc] Cancel", panelTextWidth),
+        ...wrapTextHard(`Path :: ${inputValue}`, panelTextWidth).map((line) => ({
+          line,
+          color: theme.semantic.success as TextColor,
+        })),
+        ...wrapTextHard("Autocomplete matches directories like OpenCode's @ picker. Absolute and ~/ paths still work.", panelTextWidth).map((line) => ({
+          line,
+          color: theme.base.foreground as TextColor,
+        })),
+        ...(addProjectLoading
+          ? wrapTextHard("Searching directories...", panelTextWidth).map((line) => ({
+              line,
+              color: theme.base.foreground as TextColor,
+            }))
+          : visibleAddProjectOptions.length > 0
+          ? visibleAddProjectOptions.flatMap((option, visibleIndex) => {
+              const index = addProjectFirstVisibleIndex + visibleIndex
+              const selected = index === addProjectOptionIndex
+              return dropdownOptionLines(selected ? ">" : " ", optionDisplay(option), panelTextWidth).map((line) => ({
+                line,
+                color: selected ? theme.semantic.selectionFg : theme.base.foreground,
+                backgroundColor: selected ? theme.semantic.selectionBg : undefined,
+              }))
+            })
+          : wrapTextHard("No matching directories. Press Enter to add the typed path.", panelTextWidth).map((line) => ({
+              line,
+              color: theme.base.foreground as TextColor,
+            }))),
+        ...wrapTextHard("[Up/Down] Choose  [Enter] Add  [Esc] Cancel  [Opt+Delete/Shift+Delete] Clear", panelTextWidth).map((line) => ({
+          line,
+          color: theme.semantic.warning as TextColor,
+        })),
       ]
     : []
   const renameSessionLines = showRenameSessionModal
     ? [
-        ...wrapTextHard(`Title :: ${inputValue}${inputCursor}`, panelTextWidth),
+        ...wrapTextHard(`Title :: ${inputValue}`, panelTextWidth),
         ...wrapTextHard("Give the selected session a new title.", panelTextWidth),
-        ...wrapTextHard("[Enter] Rename  [Esc] Cancel", panelTextWidth),
+        ...wrapTextHard("[Enter] Rename  [Esc] Cancel  [Opt+Delete/Shift+Delete] Clear", panelTextWidth),
+      ]
+    : []
+  const themeLineEntries: ModalLineEntry[] = showThemeModal
+    ? [
+        ...wrapTextHard(`Theme :: ${selectedThemeOption?.name ?? theme.name}`, panelTextWidth).map((line) => ({
+          line,
+          color: theme.semantic.highlight as TextColor,
+        })),
+        ...wrapTextHard("Choose a color scheme for the sidebar.", panelTextWidth).map((line) => ({
+          line,
+          color: theme.base.foreground as TextColor,
+        })),
+        ...themeOptions.flatMap((option, index) => {
+          const selected = index === themeOptionIndex
+          return wrapTextHard(`${selected ? ">" : " "} ${themeOptionDisplay(option)}`, panelTextWidth).map((line) => ({
+            line,
+            color: selected ? theme.semantic.selectionFg : theme.base.foreground,
+            backgroundColor: selected ? theme.semantic.selectionBg : undefined,
+          }))
+        }),
+        ...wrapTextHard("[Up/Down] Choose  [Enter] Apply  [Esc] Cancel", panelTextWidth).map((line) => ({
+          line,
+          color: theme.semantic.warning as TextColor,
+        })),
       ]
     : []
   const promptPrimary = mode === "search"
@@ -931,10 +1320,11 @@ export function App({
     (3 + statusLines.length + statusMessageLines.length + panelGap) +
     (deleteTarget ? 3 + deleteLines.length + panelGap : 0) +
     (killTarget ? 3 + killLines.length + panelGap : 0) +
-    (showAddProjectModal ? 3 + addProjectLines.length + panelGap : 0) +
+    (showAddProjectModal ? 3 + addProjectLineEntries.length + panelGap : 0) +
     (showRenameSessionModal ? 3 + renameSessionLines.length + panelGap : 0) +
+    (showThemeModal ? 3 + themeLineEntries.length + panelGap : 0) +
     (showToolsPanel ? 3 + toolsLines.length + panelGap : 0) +
-    (mode !== "add-project" && mode !== "rename-session" ? 3 + promptPrimaryLines.length + promptDetail.length + panelGap : 0) +
+    (mode !== "add-project" && mode !== "rename-session" && mode !== "theme" ? 3 + promptPrimaryLines.length + promptDetail.length + panelGap : 0) +
     projectPanelStaticHeight
   const visibleRowCount = Math.max(1, height - fixedHeight)
   const visibleRows = useMemo(() => windowRows(rows, selectedIndex, visibleRowCount), [rows, selectedIndex, visibleRowCount])
@@ -942,21 +1332,118 @@ export function App({
     if (!visibleRows.length) return 0
     return rows.findIndex((row) => row.key === visibleRows[0]?.key)
   }, [rows, visibleRows])
+  const handleMouseSelection = useCallback(
+    (input: string) => {
+      if (mode !== "browse") return false
+
+      let handled = false
+      for (const event of parseSgrMouseInput(input)) {
+        if ((event.code & 3) !== 0) continue
+
+        let projectRowsStartY = 2
+        if (showBanner) projectRowsStartY += 3
+        projectRowsStartY += panelGap
+        projectRowsStartY += 3 + statusLines.length + statusMessageLines.length
+        if (deleteTarget) projectRowsStartY += panelGap + 3 + deleteLines.length
+        if (killTarget) projectRowsStartY += panelGap + 3 + killLines.length
+        if (showAddProjectModal) projectRowsStartY += panelGap + 3 + addProjectLineEntries.length
+        if (showRenameSessionModal) projectRowsStartY += panelGap + 3 + renameSessionLines.length
+        if (showThemeModal) projectRowsStartY += panelGap + 3 + themeLineEntries.length
+        projectRowsStartY += panelGap + 1
+        if (loading && !snapshot) projectRowsStartY += 1
+        if (!loading && snapshot?.directories.length === 0) projectRowsStartY += 1
+
+        const rowIndex = event.y - projectRowsStartY
+        if (rowIndex < 0 || rowIndex >= visibleRows.length) continue
+        const row = visibleRows[rowIndex]
+        if (!row) continue
+
+        if (row.kind === "directory" && event.x <= 5) {
+          handled = true
+          if (!event.release) {
+            toggleDirectory(row.record)
+          }
+          continue
+        }
+
+        setSelectedKey(row.key)
+        handled = true
+
+        if (event.release && row.kind === "action") {
+          beginAddProject()
+          continue
+        }
+
+        if (event.release && row.kind !== "action") {
+          const nowMs = Date.now()
+          const last = lastMouseUpRef.current
+          if (last?.key === row.key && nowMs - last.at < 350) {
+            lastMouseUpRef.current = undefined
+            void openRow(row)
+          } else {
+            lastMouseUpRef.current = { key: row.key, at: nowMs }
+          }
+        }
+      }
+
+      return handled
+    },
+    [
+      addProjectLineEntries.length,
+      beginAddProject,
+      deleteLines.length,
+      deleteTarget,
+      killLines.length,
+      killTarget,
+      loading,
+      mode,
+      panelGap,
+      renameSessionLines.length,
+      showAddProjectModal,
+      showBanner,
+      showRenameSessionModal,
+      showThemeModal,
+      snapshot,
+      statusLines.length,
+      statusMessageLines.length,
+      themeLineEntries.length,
+      toggleDirectory,
+      openRow,
+      visibleRows,
+    ],
+  )
+
+  useEffect(() => {
+    if (!mouseEnabled) return
+    if (!stdin.isTTY) return
+
+    setRawMode(true)
+    const onData = (chunk: Buffer | string) => {
+      const input = typeof chunk === "string" ? chunk : chunk.toString("utf8")
+      if (!isMouseEscapeInput(input)) return
+      handleMouseSelection(input)
+    }
+
+    stdin.on("data", onData)
+    return () => {
+      stdin.off("data", onData)
+    }
+  }, [handleMouseSelection, mouseEnabled, setRawMode, stdin])
 
   return (
-    <Box flexDirection="column" width={width} height={height} paddingX={1} paddingTop={1}>
-      {showBanner ? <Panel title={bannerTitle} width={panelTextWidth} borderColor="cyan" titleColor="cyanBright" /> : null}
+    <Box flexDirection="column" width={width} height={height} paddingX={1} paddingTop={1} backgroundColor={theme.base.background}>
+      {showBanner ? <Panel title={bannerTitle} width={panelTextWidth} borderColor={theme.semantic.highlight} titleColor={theme.semantic.highlight} /> : null}
 
       <Box marginTop={panelGap}>
-        <Panel title={statusTitle} width={panelTextWidth}>
+        <Panel title={statusTitle} width={panelTextWidth} borderColor={theme.semantic.border} titleColor={theme.semantic.info}>
           {statusLines.map((line, index) => (
-            <Text key={`status-line-${index}`} color="white">
-              {truncate(line, panelTextWidth)}
+            <Text key={`status-line-${index}`} color={theme.base.foreground}>
+              {fitLine(line, panelTextWidth)}
             </Text>
           ))}
           {statusMessageLines.map((line, index) => (
-            <Text key={`status-message-${index}`} color={error ? "redBright" : busy ? "yellowBright" : "gray"}>
-              {truncate(line, panelTextWidth)}
+            <Text key={`status-message-${index}`} color={error ? theme.semantic.error : busy ? theme.semantic.warning : theme.semantic.muted}>
+              {fitLine(line, panelTextWidth)}
             </Text>
           ))}
         </Panel>
@@ -964,10 +1451,10 @@ export function App({
 
       {deleteTarget ? (
         <Box marginTop={panelGap}>
-          <Panel title="DELETE / ARM / CONFIRM" width={panelTextWidth} borderColor="redBright" titleColor="redBright">
+          <Panel title="DELETE / ARM / CONFIRM" width={panelTextWidth} borderColor={theme.semantic.error} titleColor={theme.semantic.error}>
             {deleteLines.map((line, index) => (
-              <Text key={`delete-${index}`} color={index === 2 ? "yellowBright" : "white"}>
-                {truncate(line, panelTextWidth)}
+              <Text key={`delete-${index}`} color={index === 2 ? theme.semantic.warning : theme.base.foreground}>
+                {fitLine(line, panelTextWidth)}
               </Text>
             ))}
           </Panel>
@@ -976,10 +1463,10 @@ export function App({
 
       {killTarget ? (
         <Box marginTop={panelGap}>
-          <Panel title="KILL / WINDOW / CONFIRM" width={panelTextWidth} borderColor="yellowBright" titleColor="yellowBright">
+          <Panel title="KILL / WINDOW / CONFIRM" width={panelTextWidth} borderColor={theme.semantic.warning} titleColor={theme.semantic.warning}>
             {killLines.map((line, index) => (
-              <Text key={`kill-${index}`} color={index === 2 ? "yellowBright" : "white"}>
-                {truncate(line, panelTextWidth)}
+              <Text key={`kill-${index}`} color={index === 2 ? theme.semantic.warning : theme.base.foreground}>
+                {fitLine(line, panelTextWidth)}
               </Text>
             ))}
           </Panel>
@@ -988,37 +1475,53 @@ export function App({
 
       {showAddProjectModal ? (
         <Box marginTop={panelGap}>
-          <Panel title="ADD / PROJECT / FOLDER" width={panelTextWidth} borderColor="greenBright" titleColor="greenBright">
-            {addProjectLines.map((line, index) => (
-              <Text key={`add-project-${index}`} color={index === 2 ? "yellowBright" : index === 0 ? "greenBright" : "white"}>
-                {line}
-              </Text>
-            ))}
+          <Panel title="ADD / PROJECT / FOLDER" width={panelTextWidth} borderColor={theme.semantic.success} titleColor={theme.semantic.success}>
+            {addProjectLineEntries.map((entry, index) => {
+              return (
+                <Text key={`add-project-${index}`} color={entry.color} backgroundColor={entry.backgroundColor}>
+                  {fitLine(entry.line, panelTextWidth)}
+                </Text>
+              )
+            })}
           </Panel>
         </Box>
       ) : null}
 
       {showRenameSessionModal ? (
         <Box marginTop={panelGap}>
-          <Panel title="RENAME / SESSION / TITLE" width={panelTextWidth} borderColor="magentaBright" titleColor="magentaBright">
+          <Panel title="RENAME / SESSION / TITLE" width={panelTextWidth} borderColor={theme.ansi.magenta} titleColor={theme.ansi.magenta}>
             {renameSessionLines.map((line, index) => (
-              <Text key={`rename-session-${index}`} color={index === 2 ? "yellowBright" : index === 0 ? "magentaBright" : "white"}>
-                {line}
+              <Text key={`rename-session-${index}`} color={index === 2 ? theme.semantic.warning : index === 0 ? theme.ansi.magenta : theme.base.foreground}>
+                {fitLine(line, panelTextWidth)}
               </Text>
             ))}
           </Panel>
         </Box>
       ) : null}
 
+      {showThemeModal ? (
+        <Box marginTop={panelGap}>
+          <Panel title="THEME / SELECTOR" width={panelTextWidth} borderColor={theme.semantic.highlight} titleColor={theme.semantic.highlight}>
+            {themeLineEntries.map((entry, index) => {
+              return (
+                <Text key={`theme-line-${index}`} color={entry.color} backgroundColor={entry.backgroundColor}>
+                  {fitLine(entry.line, panelTextWidth)}
+                </Text>
+              )
+            })}
+          </Panel>
+        </Box>
+      ) : null}
+
       <Box marginTop={panelGap} flexDirection="column">
-        <Text color="gray">{truncate(projectHeader, sectionTextWidth)}</Text>
-        {loading && !snapshot ? <Text color="yellowBright">SYNC :: workspace...</Text> : null}
-        {!loading && snapshot?.directories.length === 0 ? <Text color="gray">No projects yet. Add a project folder to get started.</Text> : null}
+        <Text color={theme.semantic.muted}>{truncate(projectHeader, sectionTextWidth)}</Text>
+        {loading && !snapshot ? <Text color={theme.semantic.warning}>SYNC :: workspace...</Text> : null}
+        {!loading && snapshot?.directories.length === 0 ? <Text color={theme.semantic.muted}>No projects yet. Add a project folder to get started.</Text> : null}
         {visibleRows.map((row, visibleIndex) => {
           const index = firstVisibleIndex + visibleIndex
           const selected = index === selectedIndex
-          const selectedForeground: TextColor = selected ? "black" : undefined
-          const selectedBackground = selected ? "cyan" : undefined
+          const selectedForeground: TextColor = selected ? theme.semantic.selectionFg : undefined
+          const selectedBackground = selected ? theme.semantic.selectionBg : undefined
           const rowWidth = sectionTextWidth
 
           if (row.kind === "action") {
@@ -1027,10 +1530,10 @@ export function App({
             const availableWidth = minimumWidth(rowWidth - suffix.length - 1)
             return (
               <Box key={row.key} width={rowWidth} justifyContent="space-between">
-                <Text color={selected ? selectedForeground : "greenBright"} backgroundColor={selectedBackground} bold>
+                <Text color={selected ? selectedForeground : theme.semantic.success} backgroundColor={selectedBackground} bold>
                   {truncate(label, availableWidth)}
                 </Text>
-                <Text color={selected ? selectedForeground : "gray"} backgroundColor={selectedBackground}>
+                <Text color={selected ? selectedForeground : theme.semantic.muted} backgroundColor={selectedBackground}>
                   {suffix}
                 </Text>
               </Box>
@@ -1048,10 +1551,10 @@ export function App({
             const availableWidth = minimumWidth(rowWidth - suffix.length - 5)
             return (
               <Box key={row.key} width={rowWidth} justifyContent="space-between">
-                <Text color={selected ? selectedForeground : "cyanBright"} backgroundColor={selectedBackground} bold>
+                <Text color={selected ? selectedForeground : theme.semantic.info} backgroundColor={selectedBackground} bold>
                   {truncate(`${marker} ${label}`, availableWidth)}
                 </Text>
-                <Text color={selected ? selectedForeground : hasCompleted ? "redBright" : "gray"} backgroundColor={selectedBackground}>
+                <Text color={selected ? selectedForeground : hasCompleted ? theme.semantic.error : theme.semantic.muted} backgroundColor={selectedBackground}>
                   {suffix}
                 </Text>
               </Box>
@@ -1062,55 +1565,64 @@ export function App({
           const isPreview = snapshot?.previewSessionID === row.session.id
           const isWorking = sessionIsWorking(row.session.status)
           const completion = sessionJustCompleted(row.session.status)
-          const marker = isWorking ? liveGlyph : completion ? "*" : isPreview ? ">" : isActive ? "|" : " "
-          const label = `|-- ${marker} ${row.session.title || "New session"}`
           const suffix = relativeTime(row.session.time.updated, now)
-          const availableWidth = minimumWidth(rowWidth - suffix.length - 1)
+          const marker = isWorking ? liveGlyph : completion ? "*" : isPreview ? ">" : isActive ? "|" : "."
+          const leftWidth = minimumWidth(rowWidth - suffix.length - 1)
+          const titleWidth = minimumWidth(leftWidth - 5)
           const color: TextColor = selected
             ? selectedForeground
             : completion
-              ? "redBright"
+              ? theme.semantic.error
               : isWorking || isActive
-                ? "greenBright"
+                ? theme.semantic.success
                 : isPreview
-                  ? "magentaBright"
-                  : "white"
+                  ? theme.ansi.magenta
+                  : theme.base.foreground
+          const markerColor: TextColor = selected ? selectedForeground : isWorking ? theme.semantic.success : completion ? theme.semantic.error : isPreview ? theme.ansi.magenta : isActive ? theme.semantic.success : theme.semantic.muted
           return (
             <Box key={row.key} width={rowWidth} justifyContent="space-between">
-              <Text color={color} backgroundColor={selectedBackground}>
-                {truncate(label, availableWidth)}
-              </Text>
-              <Text color={selected ? selectedForeground : completion ? "redBright" : "gray"} backgroundColor={selectedBackground}>
+              <Box width={leftWidth}>
+                <Text color={color} backgroundColor={selectedBackground}>
+                  {"|-- "}
+                </Text>
+                <Text color={markerColor} backgroundColor={selectedBackground}>
+                  {marker}
+                </Text>
+                <Text color={color} backgroundColor={selectedBackground}>
+                  {truncate(` ${row.session.title || "New session"}`, titleWidth)}
+                </Text>
+              </Box>
+              <Text color={selected ? selectedForeground : completion ? theme.semantic.error : theme.semantic.muted} backgroundColor={selectedBackground}>
                 {suffix}
               </Text>
             </Box>
           )
         })}
-        <Text color="gray">{truncate(projectFooter, sectionTextWidth)}</Text>
+        <Text color={theme.semantic.muted}>{truncate(projectFooter, sectionTextWidth)}</Text>
       </Box>
 
       {showToolsPanel ? (
         <Box marginTop={panelGap}>
-          <Panel title="TOOLS / MODES" width={panelTextWidth}>
+          <Panel title="TOOLS / MODES" width={panelTextWidth} borderColor={theme.semantic.border} titleColor={theme.semantic.info}>
             {toolsLines.map((line, index) => (
-              <Text key={`tool-${index}`} color="gray">
-                {line}
+              <Text key={`tool-${index}`} color={theme.semantic.muted}>
+                {fitLine(line, panelTextWidth)}
               </Text>
             ))}
           </Panel>
         </Box>
       ) : null}
 
-      {mode !== "add-project" && mode !== "rename-session" ? (
-        <Box width={panelOuterWidth} marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? "gray" : "greenBright"} flexDirection="column" paddingX={1}>
+      {mode !== "add-project" && mode !== "rename-session" && mode !== "theme" ? (
+        <Box width={panelOuterWidth} marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? theme.semantic.border : theme.semantic.success} flexDirection="column" paddingX={1}>
           {promptPrimaryLines.map((line, index) => (
-            <Text key={`prompt-primary-${index}`} color={mode === "browse" ? "white" : "greenBright"}>
-              {line}
+            <Text key={`prompt-primary-${index}`} color={mode === "browse" ? theme.base.foreground : theme.semantic.success}>
+              {fitLine(line, panelTextWidth)}
             </Text>
           ))}
           {promptDetail.map((line, index) => (
-            <Text key={`prompt-${index}`} color="gray">
-              {line}
+            <Text key={`prompt-${index}`} color={theme.semantic.muted}>
+              {fitLine(line, panelTextWidth)}
             </Text>
           ))}
         </Box>

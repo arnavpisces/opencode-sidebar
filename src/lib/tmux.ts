@@ -46,6 +46,29 @@ export async function getSessionName() {
   return runTmux(["display-message", "-p", "#{session_name}"])
 }
 
+export async function isMouseModeEnabled() {
+  const values = await Promise.all([
+    runTmux(["display-message", "-p", "#{?mouse_any_flag,1,0}"]).catch(() => "0"),
+    runTmux(["show-options", "-gv", "mouse"]).catch(() => "off"),
+    runTmux(["show-window-options", "-gv", "mouse"]).catch(() => "off"),
+  ])
+  return values.some((value) => value === "1" || value === "on")
+}
+
+export async function setCurrentPaneBackground(background: string) {
+  const paneID = await getCurrentPaneID()
+  await setPaneBackground(paneID, background)
+}
+
+export async function setPaneBackground(paneID: string, background: string) {
+  await runTmux(["select-pane", "-t", paneID, "-P", `bg=${background}`]).catch(() => {})
+}
+
+export async function resetCurrentPaneBackground() {
+  const paneID = await getCurrentPaneID()
+  await runTmux(["select-pane", "-t", paneID, "-P", "default"]).catch(() => {})
+}
+
 export async function listActiveSessionWindows(): Promise<ActiveSessionRecord[]> {
   const session = await getSessionName()
   const output = await runTmux([
