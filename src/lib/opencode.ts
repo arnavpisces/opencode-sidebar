@@ -1,7 +1,8 @@
 import net from "node:net"
-import { spawn } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import fs from "node:fs/promises"
 import path from "node:path"
+import { promisify } from "node:util"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import {
   DEFAULT_PORT,
@@ -21,14 +22,19 @@ import { assertDirectoryExists, directoryLabel, directorySubtitle, normalizeDire
 import {
   describeTerminalBackend,
   getPreviewSessionID,
+  getPreviewSessionMeta,
   isTmuxMouseModeEnabled,
   killSessionWindow,
   listActiveSessions,
+  listOwnedSessions,
   openSessionWithPreferredTerminal,
+  restartSession,
   resetTerminalBackground as resetTerminalBackgroundStyle,
   retitleSessionWindow,
   setTerminalBackground as setTerminalBackgroundStyle,
 } from "./terminal.js"
+
+const execFileAsync = promisify(execFile)
 
 type OpencodeClient = ReturnType<typeof createOpencodeClient>
 type ReadyState = {
@@ -42,6 +48,11 @@ type DirectoryAutocompleteOption = {
   label: string
   subtitle: string
   pinned: boolean
+}
+
+type ServerPortState = {
+  port: number
+  serverPID?: number
 }
 
 async function isHealthy(port: number) {
@@ -88,13 +99,59 @@ async function startDetachedServer(port: number) {
   )
   child.unref()
   await handle.close()
+  return child.pid
 }
 
-async function ensureServerPort() {
+async function processCommand(pid: number) {
+  const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "command="])
+  return stdout.trim()
+}
+
+function isExpectedServerCommand(command: string, port: number) {
+  return command.includes("opencode") && command.includes("serve") && command.includes("--port") && command.includes(String(port))
+}
+
+async function stopDetachedServer(pid: number, port: number) {
+  const command = await processCommand(pid).catch(() => "")
+  if (!isExpectedServerCommand(command, port)) return false
+
+  const sendSignal = (signal: NodeJS.Signals) => {
+    try {
+      process.kill(-pid, signal)
+      return true
+    } catch {
+      try {
+        process.kill(pid, signal)
+        return true
+      } catch {
+        return false
+      }
+    }
+  }
+
+  sendSignal("SIGTERM")
+  const deadline = Date.now() + 3_000
+  while (Date.now() < deadline) {
+    const currentCommand = await processCommand(pid).catch(() => "")
+    if (!currentCommand || !isExpectedServerCommand(currentCommand, port)) return true
+    await sleep(100)
+  }
+
+  sendSignal("SIGKILL")
+  const killDeadline = Date.now() + 1_000
+  while (Date.now() < killDeadline) {
+    const currentCommand = await processCommand(pid).catch(() => "")
+    if (!currentCommand || !isExpectedServerCommand(currentCommand, port)) return true
+    await sleep(100)
+  }
+  return true
+}
+
+async function ensureServerPort(): Promise<ServerPortState> {
   const state = await loadState()
   let port = state.serverPort || DEFAULT_PORT
 
-  if (await isHealthy(port)) return port
+  if (await isHealthy(port)) return { port }
 
   if (!(await isPortAvailable(port))) {
     port = await nextFreePort(Math.max(DEFAULT_PORT, port + 1))
@@ -104,11 +161,11 @@ async function ensureServerPort() {
     await saveState({ ...state, serverPort: port })
   }
 
-  await startDetachedServer(port)
+  const serverPID = await startDetachedServer(port)
 
   const started = Date.now()
   while (Date.now() - started < 20_000) {
-    if (await isHealthy(port)) return port
+    if (await isHealthy(port)) return { port, serverPID }
     await sleep(250)
   }
 
@@ -247,6 +304,7 @@ export class LauncherService {
   private client?: OpencodeClient
   private baseUrl?: string
   private port?: number
+  private startedServerPID?: number
   private readyPromise?: Promise<ReadyState>
   private snapshotPromise?: Promise<Snapshot>
   private readonly launchedSessionIDs = new Set<string>()
@@ -270,13 +328,16 @@ export class LauncherService {
       this.baseUrl = undefined
       this.port = undefined
 
-      const port = await ensureServerPort()
+      const { port, serverPID } = await ensureServerPort()
       const baseUrl = `http://${SERVER_HOST}:${port}`
       const client = createOpencodeClient({ baseUrl })
 
       this.client = client
       this.baseUrl = baseUrl
       this.port = port
+      if (serverPID) {
+        this.startedServerPID = serverPID
+      }
 
       return {
         client,
@@ -312,7 +373,7 @@ export class LauncherService {
         fetchPendingPermissions(client),
       ])
 
-      const snapshot = buildSnapshot({
+      let snapshot = buildSnapshot({
         baseUrl,
         serverPort: port,
         projects,
@@ -322,6 +383,13 @@ export class LauncherService {
         activeSessions,
         previewSessionID,
       })
+      if (state.hiddenDirectories.length > 0) {
+        const hiddenSet = new Set(state.hiddenDirectories)
+        snapshot = {
+          ...snapshot,
+          directories: snapshot.directories.filter((d) => !hiddenSet.has(d.directory)),
+        }
+      }
       this.notifier.syncSnapshot(snapshot)
       this.notifier.syncPendingRequests({
         questions,
@@ -396,6 +464,16 @@ export class LauncherService {
     await updateState((state) => ({
       ...state,
       pinnedDirectories: state.pinnedDirectories.filter((item) => item !== directory),
+    }))
+  }
+
+  async hideDirectory(directory: string) {
+    await updateState((state) => ({
+      ...state,
+      pinnedDirectories: state.pinnedDirectories.filter((item) => item !== directory),
+      hiddenDirectories: state.hiddenDirectories.includes(directory)
+        ? state.hiddenDirectories
+        : [...state.hiddenDirectories, directory],
     }))
   }
 
@@ -480,6 +558,14 @@ export class LauncherService {
     return killed
   }
 
+  async restartCurrentSession(): Promise<boolean> {
+    const { baseUrl } = await this.ensureReady()
+    const preview = await getPreviewSessionMeta()
+    if (!preview?.sessionID || !preview.paneID) return false
+    await restartSession(preview.paneID, preview.directory, preview.sessionID, baseUrl)
+    return true
+  }
+
   async isMouseModeEnabled() {
     return isTmuxMouseModeEnabled().catch(() => false)
   }
@@ -493,22 +579,35 @@ export class LauncherService {
   }
 
   async shutdown() {
-    const launchedSessionIDs = [...this.launchedSessionIDs]
+    const [ownedSessions, activeSessionsBeforeShutdown] = await Promise.all([
+      listOwnedSessions().catch(() => []),
+      listActiveSessions().catch(() => []),
+    ])
+    const ownedSessionIDs = [...new Set(ownedSessions.map((session) => session.sessionID))]
+    const ownedSessionIDSet = new Set(ownedSessionIDs)
+    const hasUnownedActiveSessions = activeSessionsBeforeShutdown.some((session) => !ownedSessionIDSet.has(session.sessionID))
     const results = [] as boolean[]
-    for (const sessionID of launchedSessionIDs) {
+    for (const sessionID of ownedSessionIDs) {
       results.push(await killSessionWindow(sessionID).catch(() => false))
     }
 
     const deadline = Date.now() + 3_000
     while (Date.now() < deadline) {
-      const activeSessionIDs = new Set((await listActiveSessions().catch(() => [])).map((session) => session.sessionID))
-      if (launchedSessionIDs.every((sessionID) => !activeSessionIDs.has(sessionID))) {
+      const activeSessionIDs = new Set((await listOwnedSessions().catch(() => [])).map((session) => session.sessionID))
+      if (ownedSessionIDs.every((sessionID) => !activeSessionIDs.has(sessionID))) {
         break
       }
       await sleep(100)
     }
 
     this.launchedSessionIDs.clear()
+    if (this.startedServerPID && this.port && !hasUnownedActiveSessions) {
+      await stopDetachedServer(this.startedServerPID, this.port).catch(() => false)
+      this.startedServerPID = undefined
+      this.client = undefined
+      this.baseUrl = undefined
+      this.port = undefined
+    }
     return results
   }
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 - 2026-06-08
+
+- Added project folder hiding: press `H` on a directory row to hide it from the sidebar (with confirmation dialog). Hidden folders can be re-added via the Add project folder flow.
+- Changed `R` from refresh to restart: kills and respawns the opencode process in the preview pane for the current session.
+- Renamed the shortcuts panel from "TOOLS / MODES" to "SHORTCUTS" with keys colored in info and descriptions in muted.
+- Implemented smooth mouse wheel scrolling with accumulate-and-flush delta handling, clamped at list edges (no wrapping).
+- Added unit test for scroll delta clamping at both boundaries.
+
 ## 0.2.0 - 2026-05-10
 
 - Added a persisted theme selector opened with `T`, including keyboard navigation and Enter/Esc apply/cancel behavior.

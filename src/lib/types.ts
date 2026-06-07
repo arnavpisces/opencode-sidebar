@@ -1,6 +1,7 @@
 export type PersistedState = {
   serverPort: number
   pinnedDirectories: string[]
+  hiddenDirectories: string[]
   themeID: string
 }
 
@@ -45,6 +46,7 @@ export type ActiveSessionRecord = {
   directory: string
   title: string
   active: boolean
+  ownerID?: string
 }
 
 export type SessionRuntimeStatus =

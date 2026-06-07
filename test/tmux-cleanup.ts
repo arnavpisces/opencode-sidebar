@@ -12,14 +12,15 @@ async function tmux(args: string[]) {
 }
 
 async function main() {
-  const service = new LauncherService()
+  const opener = new LauncherService()
+  const cleanup = new LauncherService()
   const createdSessions: Array<{ directory: string; sessionID: string }> = []
 
   try {
     const directory = await createTestWorkspace("cleanup")
-    const firstResult = await service.openNewSession(directory)
+    const firstResult = await opener.openNewSession(directory)
     await sleep(1200)
-    const secondResult = await service.openNewSession(directory)
+    const secondResult = await opener.openNewSession(directory)
     await sleep(1200)
 
     createdSessions.push(
@@ -45,7 +46,7 @@ async function main() {
       throw new Error(`Expected at least one launched session pane before shutdown, got ${ownedBefore.length}`)
     }
 
-    await service.shutdown()
+    await cleanup.shutdown()
     await sleep(600)
 
     const after = await tmux([
@@ -66,8 +67,9 @@ async function main() {
 
     console.log("tmux-cleanup-ok")
   } finally {
-    await service.shutdown().catch(() => {})
-    await cleanupTestSessions(service, createdSessions)
+    await cleanupTestSessions(opener, createdSessions)
+    await opener.shutdown().catch(() => {})
+    await cleanup.shutdown().catch(() => {})
   }
 }
 

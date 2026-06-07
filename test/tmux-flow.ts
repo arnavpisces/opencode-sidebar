@@ -62,8 +62,8 @@ async function main() {
 
     console.log("tmux-flow-ok")
   } finally {
-    await service.shutdown().catch(() => {})
     await cleanupTestSessions(service, createdSessions)
+    await service.shutdown().catch(() => {})
   }
 }
 

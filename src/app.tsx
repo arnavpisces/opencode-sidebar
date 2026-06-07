@@ -35,6 +35,11 @@ type RenameTarget = {
   title: string
 }
 
+type HideTarget = {
+  directory: string
+  label: string
+}
+
 type AddProjectOption = {
   directory: string
   label: string
@@ -46,6 +51,16 @@ type ThemeOption = {
   id: string
   name: string
 }
+
+type MousePressTarget =
+  | {
+      kind: "toggle"
+      key: string
+    }
+  | {
+      kind: "row"
+      key: string
+    }
 
 type ModalLineEntry = {
   line: string
@@ -364,6 +379,7 @@ export function App({
   const [busy, setBusy] = useState<string>()
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>()
   const [killTarget, setKillTarget] = useState<KillTarget>()
+  const [hideTarget, setHideTarget] = useState<HideTarget>()
   const [renameTarget, setRenameTarget] = useState<RenameTarget>()
   const [addProjectOptionIndex, setAddProjectOptionIndex] = useState(0)
   const [addProjectOptions, setAddProjectOptions] = useState<AddProjectOption[]>([])
@@ -374,6 +390,7 @@ export function App({
   const stickyStatusUntilRef = useRef(0)
   const lastInteractionAtRef = useRef(Date.now())
   const lastMouseUpRef = useRef<{ key: string; at: number } | undefined>(undefined)
+  const mousePressTargetRef = useRef<MousePressTarget | undefined>(undefined)
   const { width, height } = useTerminalSize()
   const now = useNowTick()
   const frame = useFrame(160)
@@ -511,6 +528,10 @@ export function App({
       setKillTarget(undefined)
       setTemporaryStatus("Selected session is already gone")
     }
+    if (hideTarget && !snapshotHasKey(snapshot, `dir:${hideTarget.directory}`)) {
+      setHideTarget(undefined)
+      setTemporaryStatus("Selected project folder is already gone")
+    }
     if (renameTarget && !snapshotHasKey(snapshot, `session:${renameTarget.sessionID}`)) {
       setRenameTarget(undefined)
       if (mode === "rename-session") {
@@ -519,7 +540,7 @@ export function App({
       }
       setTemporaryStatus("Selected session is already gone")
     }
-  }, [deleteTarget, killTarget, mode, renameTarget, setTemporaryStatus, snapshot])
+  }, [deleteTarget, killTarget, hideTarget, mode, renameTarget, setTemporaryStatus, snapshot])
 
   useEffect(() => {
     if (!rows.length && snapshot?.directories.length) {
@@ -898,6 +919,42 @@ export function App({
     setTemporaryStatus("Kill cancelled")
   }, [killTarget, setTemporaryStatus])
 
+  const requestHideSelection = useCallback(() => {
+    lastInteractionAtRef.current = Date.now()
+    if (!selectedRow || selectedRow.kind !== "directory") {
+      setTemporaryStatus("Select a project folder to hide")
+      return
+    }
+    setHideTarget({
+      directory: selectedRow.record.directory,
+      label: selectedRow.record.label,
+    })
+  }, [selectedRow, setTemporaryStatus])
+
+  const confirmHideSelection = useCallback(async () => {
+    lastInteractionAtRef.current = Date.now()
+    if (!hideTarget) return
+    const target = hideTarget
+    setHideTarget(undefined)
+    setBusy(`Hiding ${target.label}...`)
+    try {
+      await service.hideDirectory(target.directory)
+      setTemporaryStatus(`Hid project folder ${target.directory}`)
+      await refresh()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setBusy(undefined)
+    }
+  }, [hideTarget, refresh, service, setTemporaryStatus])
+
+  const cancelHideSelection = useCallback(() => {
+    lastInteractionAtRef.current = Date.now()
+    if (!hideTarget) return
+    setHideTarget(undefined)
+    setTemporaryStatus("Hide cancelled")
+  }, [hideTarget, setTemporaryStatus])
+
   const cancelRenameSelection = useCallback(() => {
     lastInteractionAtRef.current = Date.now()
     if (!renameTarget && mode !== "rename-session") return
@@ -947,6 +1004,17 @@ export function App({
         }
         if (key.return || loweredInput === "y") {
           void confirmKillSelection()
+        }
+        return
+      }
+
+      if (hideTarget) {
+        if (key.escape || loweredInput === "n") {
+          cancelHideSelection()
+          return
+        }
+        if (key.return || loweredInput === "y") {
+          void confirmHideSelection()
         }
         return
       }
@@ -1113,12 +1181,24 @@ export function App({
         requestKillSelection()
         return
       }
+      if (input === "h") {
+        requestHideSelection()
+        return
+      }
       if (input === "e") {
         beginRenameSession()
         return
       }
       if (input === "r") {
-        void refresh()
+        void (async () => {
+          const restarted = await service.restartCurrentSession()
+          if (restarted) {
+            setTemporaryStatus("Session restarting...")
+          } else {
+            setTemporaryStatus("No active session to restart")
+          }
+          await refresh()
+        })()
         return
       }
       if (input === "n") {
@@ -1195,7 +1275,7 @@ export function App({
   const showAddProjectModal = mode === "add-project"
   const showRenameSessionModal = mode === "rename-session"
   const showThemeModal = mode === "theme"
-  const showToolsPanel = !compactLayout || (!deleteTarget && !killTarget)
+  const showToolsPanel = !compactLayout || (!deleteTarget && !killTarget && !hideTarget)
   const addProjectDropdownLimit = compactLayout ? 4 : 6
   const visibleAddProjectOptions = useMemo(
     () => windowRows(addProjectOptions, addProjectOptionIndex, addProjectDropdownLimit),
@@ -1220,10 +1300,24 @@ export function App({
       ]
   const statusMessageText = error ? `STATE      ERROR :: ${error}` : busy ? `STATE      WORK :: ${busy} [${spinner}]` : `STATE      LINK :: ${status}`
   const statusMessageLines = wrapTextHard(statusMessageText, panelTextWidth)
-  const toolsLines = wrapTextHard(
-    `[Enter] Load  [Double-click] Open  [N] New  [E] Rename  [D] Delete  [K] Kill  [/] Find  [A] Add  [T] Theme  [Space] Expand  [R] Refresh  [Q] Quit  [Mouse] ${mouseEnabled ? "Click + arrow toggle enabled" : "Enable tmux mouse to click rows"}`,
-    panelTextWidth,
-  )
+  const shortcutItems = useMemo(() => [
+    { key: "Enter", desc: "Load" },
+    { key: "Double-click", desc: "Open" },
+    { key: "N", desc: "New" },
+    { key: "E", desc: "Rename" },
+    { key: "D", desc: "Delete" },
+    { key: "H", desc: "Hide" },
+    { key: "K", desc: "Kill" },
+    { key: "/", desc: "Find" },
+    { key: "A", desc: "Add" },
+    { key: "T", desc: "Theme" },
+    { key: "Space", desc: "Expand" },
+    { key: "R", desc: "Restart" },
+    { key: "Q", desc: "Quit" },
+  ], [])
+  const mouseDesc = mouseEnabled ? "Click + arrow toggle enabled" : "Enable tmux mouse"
+  const shortcutDesc = shortcutItems.map((s) => `[${s.key}] ${s.desc}`).concat([`[Mouse] ${mouseDesc}`]).join("  ")
+  const toolsLines = wrapTextHard(shortcutDesc, panelTextWidth)
   const addProjectLineEntries: ModalLineEntry[] = showAddProjectModal
     ? [
         ...wrapTextHard(`Path :: ${inputValue}`, panelTextWidth).map((line) => ({
@@ -1311,6 +1405,13 @@ export function App({
         "[Enter/Y] confirm  [Esc/N] cancel",
       ]
     : []
+  const hideLines = hideTarget
+    ? [
+        `Hide project folder \"${truncate(hideTarget.label, minimumWidth(panelTextWidth - 22))}\"?`,
+        truncate(hideTarget.directory, panelTextWidth),
+        "[Enter/Y] confirm  [Esc/N] cancel",
+      ]
+    : []
   const projectHeader = sectionRule(rows.length ? `PROJECT MATRIX ${selectedIndex + 1}/${rows.length}` : "PROJECT MATRIX", sectionTextWidth)
   const projectFooter = rows.length > 0 ? truncate(`FOCUS :: ${selectedIndex + 1}/${rows.length} :: ${detail}`, sectionTextWidth) : truncate(`FOCUS :: ${detail}`, sectionTextWidth)
 
@@ -1320,6 +1421,7 @@ export function App({
     (3 + statusLines.length + statusMessageLines.length + panelGap) +
     (deleteTarget ? 3 + deleteLines.length + panelGap : 0) +
     (killTarget ? 3 + killLines.length + panelGap : 0) +
+    (hideTarget ? 3 + hideLines.length + panelGap : 0) +
     (showAddProjectModal ? 3 + addProjectLineEntries.length + panelGap : 0) +
     (showRenameSessionModal ? 3 + renameSessionLines.length + panelGap : 0) +
     (showThemeModal ? 3 + themeLineEntries.length + panelGap : 0) +
@@ -1336,54 +1438,90 @@ export function App({
     (input: string) => {
       if (mode !== "browse") return false
 
+      let projectRowsStartY = 2
+      if (showBanner) projectRowsStartY += 3
+      projectRowsStartY += panelGap
+      projectRowsStartY += 3 + statusLines.length + statusMessageLines.length
+      if (deleteTarget) projectRowsStartY += panelGap + 3 + deleteLines.length
+      if (killTarget) projectRowsStartY += panelGap + 3 + killLines.length
+      if (hideTarget) projectRowsStartY += panelGap + 3 + hideLines.length
+      if (showAddProjectModal) projectRowsStartY += panelGap + 3 + addProjectLineEntries.length
+      if (showRenameSessionModal) projectRowsStartY += panelGap + 3 + renameSessionLines.length
+      if (showThemeModal) projectRowsStartY += panelGap + 3 + themeLineEntries.length
+      projectRowsStartY += panelGap + 1
+      if (loading && !snapshot) projectRowsStartY += 1
+      if (!loading && snapshot?.directories.length === 0) projectRowsStartY += 1
+
       let handled = false
+      let scrollDelta = 0
       for (const event of parseSgrMouseInput(input)) {
+        if ((event.code & 64) !== 0) {
+          if (event.release) continue
+          if (event.y < projectRowsStartY || event.y >= projectRowsStartY + visibleRows.length || !rows.length) continue
+          scrollDelta += (event.code & 1) === 0 ? -1 : 1
+          handled = true
+          continue
+        }
         if ((event.code & 3) !== 0) continue
 
-        let projectRowsStartY = 2
-        if (showBanner) projectRowsStartY += 3
-        projectRowsStartY += panelGap
-        projectRowsStartY += 3 + statusLines.length + statusMessageLines.length
-        if (deleteTarget) projectRowsStartY += panelGap + 3 + deleteLines.length
-        if (killTarget) projectRowsStartY += panelGap + 3 + killLines.length
-        if (showAddProjectModal) projectRowsStartY += panelGap + 3 + addProjectLineEntries.length
-        if (showRenameSessionModal) projectRowsStartY += panelGap + 3 + renameSessionLines.length
-        if (showThemeModal) projectRowsStartY += panelGap + 3 + themeLineEntries.length
-        projectRowsStartY += panelGap + 1
-        if (loading && !snapshot) projectRowsStartY += 1
-        if (!loading && snapshot?.directories.length === 0) projectRowsStartY += 1
-
         const rowIndex = event.y - projectRowsStartY
-        if (rowIndex < 0 || rowIndex >= visibleRows.length) continue
+        if (rowIndex < 0 || rowIndex >= visibleRows.length) {
+          if (event.release) {
+            mousePressTargetRef.current = undefined
+          }
+          continue
+        }
         const row = visibleRows[rowIndex]
         if (!row) continue
 
-        if (row.kind === "directory" && event.x <= 5) {
-          handled = true
-          if (!event.release) {
-            toggleDirectory(row.record)
+        const inDirectoryToggle = row.kind === "directory" && event.x <= 5
+
+        if (!event.release) {
+          mousePressTargetRef.current = {
+            kind: inDirectoryToggle ? "toggle" : "row",
+            key: row.key,
           }
+          handled = true
+          continue
+        }
+
+        const pressedTarget = mousePressTargetRef.current
+        mousePressTargetRef.current = undefined
+        if (!pressedTarget || pressedTarget.key !== row.key || pressedTarget.kind !== (inDirectoryToggle ? "toggle" : "row")) {
+          continue
+        }
+
+        handled = true
+
+        if (pressedTarget.kind === "toggle" && row.kind === "directory") {
+          toggleDirectory(row.record)
           continue
         }
 
         setSelectedKey(row.key)
-        handled = true
 
-        if (event.release && row.kind === "action") {
+        if (row.kind === "action") {
           beginAddProject()
           continue
         }
 
-        if (event.release && row.kind !== "action") {
-          const nowMs = Date.now()
-          const last = lastMouseUpRef.current
-          if (last?.key === row.key && nowMs - last.at < 350) {
-            lastMouseUpRef.current = undefined
-            void openRow(row)
-          } else {
-            lastMouseUpRef.current = { key: row.key, at: nowMs }
-          }
+        const nowMs = Date.now()
+        const last = lastMouseUpRef.current
+        if (last?.key === row.key && nowMs - last.at < 350) {
+          lastMouseUpRef.current = undefined
+          void openRow(row)
+        } else {
+          lastMouseUpRef.current = { key: row.key, at: nowMs }
         }
+      }
+
+      if (scrollDelta !== 0 && rows.length) {
+        setSelectedKey((currentKey) => {
+          const currentIdx = rows.findIndex((r) => rowKey(r) === currentKey)
+          if (currentIdx < 0) return currentKey
+          const nextIdx = Math.max(0, Math.min(currentIdx + scrollDelta, rows.length - 1))
+          return rowKey(rows[nextIdx])
+        })
       }
 
       return handled
@@ -1393,6 +1531,8 @@ export function App({
       beginAddProject,
       deleteLines.length,
       deleteTarget,
+      hideLines.length,
+      hideTarget,
       killLines.length,
       killTarget,
       loading,
@@ -1410,6 +1550,9 @@ export function App({
       toggleDirectory,
       openRow,
       visibleRows,
+      rows,
+      selectedIndex,
+      setSelectedKey,
     ],
   )
 
@@ -1466,6 +1609,18 @@ export function App({
           <Panel title="KILL / WINDOW / CONFIRM" width={panelTextWidth} borderColor={theme.semantic.warning} titleColor={theme.semantic.warning}>
             {killLines.map((line, index) => (
               <Text key={`kill-${index}`} color={index === 2 ? theme.semantic.warning : theme.base.foreground}>
+                {fitLine(line, panelTextWidth)}
+              </Text>
+            ))}
+          </Panel>
+        </Box>
+      ) : null}
+
+      {hideTarget ? (
+        <Box marginTop={panelGap}>
+          <Panel title="HIDE / PROJECT / CONFIRM" width={panelTextWidth} borderColor={theme.semantic.error} titleColor={theme.semantic.error}>
+            {hideLines.map((line, index) => (
+              <Text key={`hide-${index}`} color={index === 2 ? theme.semantic.warning : theme.base.foreground}>
                 {fitLine(line, panelTextWidth)}
               </Text>
             ))}
@@ -1603,12 +1758,20 @@ export function App({
 
       {showToolsPanel ? (
         <Box marginTop={panelGap}>
-          <Panel title="TOOLS / MODES" width={panelTextWidth} borderColor={theme.semantic.border} titleColor={theme.semantic.info}>
-            {toolsLines.map((line, index) => (
-              <Text key={`tool-${index}`} color={theme.semantic.muted}>
-                {fitLine(line, panelTextWidth)}
-              </Text>
-            ))}
+          <Panel title="SHORTCUTS" width={panelTextWidth} borderColor={theme.semantic.border} titleColor={theme.semantic.info}>
+            {toolsLines.map((line, index) => {
+              const segments = line.split(/(\[.*?\])/g)
+              return (
+                <Text key={`tool-${index}`}>
+                  {segments.map((segment, segIndex) => {
+                    if (segment.startsWith("[") && segment.endsWith("]")) {
+                      return <Text key={segIndex} color={theme.semantic.info}>{segment}</Text>
+                    }
+                    return <Text key={segIndex} color={theme.semantic.muted}>{segment}</Text>
+                  })}
+                </Text>
+              )
+            })}
           </Panel>
         </Box>
       ) : null}

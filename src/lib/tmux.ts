@@ -9,6 +9,8 @@ let cachedRightPaneID: string | undefined
 const SESSION_OPTION = "@opencode_session_id"
 const DIRECTORY_OPTION = "@opencode_directory"
 const TITLE_OPTION = "@opencode_title"
+const OWNER_OPTION = "@opencode_sidebar_owner_id"
+const SIDEBAR_OWNER_OPTION = "@opencode_sidebar_runtime_owner_id"
 const PREVIEW_SESSION_OPTION = "@opencode_preview_session_id"
 const PREVIEW_DIRECTORY_OPTION = "@opencode_preview_directory"
 const PREVIEW_TITLE_OPTION = "@opencode_preview_title"
@@ -77,7 +79,7 @@ export async function listActiveSessionWindows(): Promise<ActiveSessionRecord[]>
     "-t",
     session,
     "-F",
-      `#{pane_id}\t#{window_id}\t#{window_name}\t#{window_active}\t#{${SESSION_OPTION}}\t#{${DIRECTORY_OPTION}}\t#{${TITLE_OPTION}}`,
+      `#{pane_id}\t#{window_id}\t#{window_name}\t#{window_active}\t#{${SESSION_OPTION}}\t#{${DIRECTORY_OPTION}}\t#{${TITLE_OPTION}}\t#{${OWNER_OPTION}}`,
     ])
 
   return output
@@ -85,7 +87,7 @@ export async function listActiveSessionWindows(): Promise<ActiveSessionRecord[]>
     .filter(Boolean)
     .map((line) => line.split("\t"))
     .filter((parts) => parts[4])
-    .map(([paneID, windowID, windowName, active, sessionID, directory, title]) => ({
+    .map(([paneID, windowID, windowName, active, sessionID, directory, title, ownerID]) => ({
       paneID,
       windowID,
       windowName,
@@ -93,7 +95,31 @@ export async function listActiveSessionWindows(): Promise<ActiveSessionRecord[]>
       sessionID,
       directory,
       title,
+      ownerID: ownerID || undefined,
     }))
+}
+
+function createSidebarOwnerID() {
+  return `sidebar-${process.pid}-${Date.now().toString(36)}`
+}
+
+export async function getSidebarOwnerID() {
+  const session = await getSessionName()
+  return (await runTmux(["show-options", "-v", "-t", session, SIDEBAR_OWNER_OPTION]).catch(() => "")) || undefined
+}
+
+export async function getOrCreateSidebarOwnerID() {
+  const existing = await getSidebarOwnerID()
+  if (existing) return existing
+  const ownerID = createSidebarOwnerID()
+  const session = await getSessionName()
+  await runTmux(["set-option", "-t", session, SIDEBAR_OWNER_OPTION, ownerID])
+  return ownerID
+}
+
+export async function listOwnedSessionWindows(ownerID: string) {
+  const windows = await listActiveSessionWindows()
+  return windows.filter((window) => window.ownerID === ownerID)
 }
 
 export function trimBackgroundSessions(records: ActiveSessionRecord[], maxBackgroundSessions = MAX_BACKGROUND_SESSIONS) {
@@ -265,6 +291,7 @@ export async function clearWindowSession(windowID: string) {
   await runTmux(["set-option", "-u", "-w", "-t", windowID, SESSION_OPTION]).catch(() => {})
   await runTmux(["set-option", "-u", "-w", "-t", windowID, DIRECTORY_OPTION]).catch(() => {})
   await runTmux(["set-option", "-u", "-w", "-t", windowID, TITLE_OPTION]).catch(() => {})
+  await runTmux(["set-option", "-u", "-w", "-t", windowID, OWNER_OPTION]).catch(() => {})
 }
 
 export async function setPaneSession(input: {
@@ -272,10 +299,30 @@ export async function setPaneSession(input: {
   sessionID: string
   directory: string
   title: string
+  ownerID?: string
 }) {
   await runTmux(["set-option", "-p", "-t", input.paneID, SESSION_OPTION, input.sessionID]).catch(() => {})
   await runTmux(["set-option", "-p", "-t", input.paneID, DIRECTORY_OPTION, input.directory]).catch(() => {})
   await runTmux(["set-option", "-p", "-t", input.paneID, TITLE_OPTION, input.title]).catch(() => {})
+  if (input.ownerID) {
+    await runTmux(["set-option", "-p", "-t", input.paneID, OWNER_OPTION, input.ownerID]).catch(() => {})
+  }
+}
+
+export async function setWindowSession(input: {
+  windowID: string
+  sessionID: string
+  directory: string
+  title: string
+  ownerID?: string
+}) {
+  await runTmux(["rename-window", "-t", input.windowID, tmuxWindowName(input.directory, input.title)]).catch(() => {})
+  await runTmux(["set-option", "-w", "-t", input.windowID, SESSION_OPTION, input.sessionID]).catch(() => {})
+  await runTmux(["set-option", "-w", "-t", input.windowID, DIRECTORY_OPTION, input.directory]).catch(() => {})
+  await runTmux(["set-option", "-w", "-t", input.windowID, TITLE_OPTION, input.title]).catch(() => {})
+  if (input.ownerID) {
+    await runTmux(["set-option", "-w", "-t", input.windowID, OWNER_OPTION, input.ownerID]).catch(() => {})
+  }
 }
 
 export async function getRightPaneID(selectorPaneID: string) {
@@ -412,6 +459,7 @@ export async function swapPreviewWithSessionPane(input: {
     directory: string
     title: string
   }
+  ownerID?: string
 }) {
   await runTmux(["swap-pane", "-d", "-s", input.sessionPaneID, "-t", input.previewPaneID])
 
@@ -426,15 +474,19 @@ export async function swapPreviewWithSessionPane(input: {
     sessionID: input.nextSession.sessionID,
     directory: input.nextSession.directory,
     title: input.nextSession.title,
+    ownerID: input.ownerID,
   })
   const launcherWindowID = await getCurrentWindowID()
   await clearWindowSession(launcherWindowID)
 
   if (input.previewSession) {
-    await runTmux(["rename-window", "-t", input.hiddenWindowID, tmuxWindowName(input.previewSession.directory, input.previewSession.title)]).catch(() => {})
-    await runTmux(["set-option", "-w", "-t", input.hiddenWindowID, SESSION_OPTION, input.previewSession.sessionID]).catch(() => {})
-    await runTmux(["set-option", "-w", "-t", input.hiddenWindowID, DIRECTORY_OPTION, input.previewSession.directory]).catch(() => {})
-    await runTmux(["set-option", "-w", "-t", input.hiddenWindowID, TITLE_OPTION, input.previewSession.title]).catch(() => {})
+    await setWindowSession({
+      windowID: input.hiddenWindowID,
+      sessionID: input.previewSession.sessionID,
+      directory: input.previewSession.directory,
+      title: input.previewSession.title,
+      ownerID: input.ownerID,
+    })
   } else {
     await killWindow(input.hiddenWindowID)
   }
@@ -447,6 +499,7 @@ export async function parkPreviewSession(input: {
   sessionID: string
   directory: string
   title: string
+  ownerID?: string
 }) {
   const output = await runTmux([
     "break-pane",
@@ -459,10 +512,13 @@ export async function parkPreviewSession(input: {
   ])
   const [windowID, paneID] = output.split("\t")
   cachedRightPaneID = undefined
-  await runTmux(["rename-window", "-t", windowID, tmuxWindowName(input.directory, input.title)]).catch(() => {})
-  await runTmux(["set-option", "-w", "-t", windowID, SESSION_OPTION, input.sessionID]).catch(() => {})
-  await runTmux(["set-option", "-w", "-t", windowID, DIRECTORY_OPTION, input.directory]).catch(() => {})
-  await runTmux(["set-option", "-w", "-t", windowID, TITLE_OPTION, input.title]).catch(() => {})
+  await setWindowSession({
+    windowID,
+    sessionID: input.sessionID,
+    directory: input.directory,
+    title: input.title,
+    ownerID: input.ownerID,
+  })
   await clearPreviewSession()
   return {
     windowID,

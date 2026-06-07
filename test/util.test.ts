@@ -47,6 +47,24 @@ describe("util helpers", () => {
     expect(deleteTextInputValue("Rename me", { backspace: true })).toBe("Rename m")
   })
 
+  test("scroll delta clamps at list boundaries", () => {
+    const clamp = (idx: number, delta: number, len: number) => Math.max(0, Math.min(idx + delta, len - 1))
+
+    expect(clamp(0, -5, 10)).toBe(0)
+    expect(clamp(0, 0, 10)).toBe(0)
+    expect(clamp(0, 3, 10)).toBe(3)
+
+    expect(clamp(9, 2, 10)).toBe(9)
+    expect(clamp(9, 0, 10)).toBe(9)
+    expect(clamp(9, -3, 10)).toBe(6)
+
+    expect(clamp(0, -1, 1)).toBe(0)
+    expect(clamp(0, 1, 1)).toBe(0)
+
+    expect(clamp(5, 20, 10)).toBe(9)
+    expect(clamp(5, -20, 10)).toBe(0)
+  })
+
   test("mouse helpers recognize and parse sgr mouse input", () => {
     const input = "\u001b[<0;12;18M\u001b[<0;12;18m"
     expect(isMouseEscapeInput(input)).toBe(true)

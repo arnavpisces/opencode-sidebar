@@ -1,12 +1,16 @@
 import type { ActiveSessionRecord, OpenResult, TerminalBackendName } from "./types.js"
+export { getPreviewSessionMeta } from "./tmux.js"
 import {
   ensureTmuxLayout,
   findAnyWindowBySessionID,
   findBackgroundWindowBySessionID,
+  getOrCreateSidebarOwnerID,
+  getSidebarOwnerID,
   getPreviewSessionMeta,
   isMouseModeEnabled,
   isTmux,
   killSessionWindowBySessionID,
+  listOwnedSessionWindows,
   listActiveSessionWindows,
   parkPreviewSession,
   pruneBackgroundSessions,
@@ -61,6 +65,12 @@ export async function cleanupSidebarSessions(sessionIDs: Iterable<string>) {
   return results
 }
 
+export async function listOwnedSessions() {
+  const ownerID = await getSidebarOwnerID()
+  if (!ownerID) return []
+  return listOwnedSessionWindows(ownerID)
+}
+
 export async function getPreviewSessionID() {
   const preview = await getPreviewSessionMeta()
   return preview?.sessionID
@@ -83,6 +93,7 @@ export async function resetTerminalBackground() {
 export async function openSessionWithPreferredTerminal(input: OpenInput): Promise<OpenResult> {
   let { rightPaneID } = await ensureTmuxLayout(input.directory)
   const previewSession = await getPreviewSessionMeta()
+  const ownerID = await getOrCreateSidebarOwnerID()
 
   if (previewSession?.paneID) {
     rightPaneID = previewSession.paneID
@@ -108,6 +119,7 @@ export async function openSessionWithPreferredTerminal(input: OpenInput): Promis
         directory: input.directory,
         title: input.title,
       },
+      ownerID,
     })
     await pruneBackgroundSessions({
       keepSessionIDs: [input.sessionID],
@@ -125,6 +137,7 @@ export async function openSessionWithPreferredTerminal(input: OpenInput): Promis
       sessionID: previewSession.sessionID,
       directory: previewSession.directory,
       title: previewSession.title,
+      ownerID,
     })
     rightPaneID = (await ensureTmuxLayout(input.directory)).rightPaneID
   }
@@ -147,6 +160,7 @@ export async function openSessionWithPreferredTerminal(input: OpenInput): Promis
     sessionID: input.sessionID,
     directory: input.directory,
     title: input.title,
+    ownerID,
   })
   await setPaneTitle(rightPaneID, sessionWindowTitle(input.directory, input.title))
   await setPreviewSession({
@@ -164,4 +178,16 @@ export async function openSessionWithPreferredTerminal(input: OpenInput): Promis
     sessionID: input.sessionID,
     backend: "tmux",
   }
+}
+
+export async function restartSession(paneID: string, cwd: string, sessionID: string, baseUrl: string) {
+  await respawnPane(paneID, cwd, [
+    "opencode",
+    "attach",
+    baseUrl,
+    "--dir",
+    cwd,
+    "--session",
+    sessionID,
+  ])
 }

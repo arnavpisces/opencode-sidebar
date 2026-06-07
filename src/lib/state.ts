@@ -8,6 +8,7 @@ import { distinct } from "./util.js"
 const DEFAULT_STATE: PersistedState = {
   serverPort: DEFAULT_PORT,
   pinnedDirectories: [],
+  hiddenDirectories: [],
   themeID: DEFAULT_THEME_ID,
 }
 
@@ -29,6 +30,7 @@ function normalizeState(parsed: Partial<PersistedState>): PersistedState {
   return {
     serverPort: parsed.serverPort && Number.isInteger(parsed.serverPort) ? parsed.serverPort : DEFAULT_PORT,
     pinnedDirectories: distinct((parsed.pinnedDirectories ?? []).filter((item): item is string => typeof item === "string")),
+    hiddenDirectories: distinct((parsed.hiddenDirectories ?? []).filter((item): item is string => typeof item === "string")),
     themeID: typeof parsed.themeID === "string" ? parsed.themeID : DEFAULT_THEME_ID,
   }
 }
@@ -58,6 +60,7 @@ export async function saveState(state: PersistedState) {
   const normalized: PersistedState = {
     serverPort: state.serverPort,
     pinnedDirectories: distinct(state.pinnedDirectories),
+    hiddenDirectories: distinct(state.hiddenDirectories),
     themeID: state.themeID || DEFAULT_THEME_ID,
   }
   await fs.writeFile(STATE_FILE, JSON.stringify(normalized, null, 2) + "\n", {

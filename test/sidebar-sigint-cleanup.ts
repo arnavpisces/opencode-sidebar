@@ -46,6 +46,16 @@ async function waitForSessionIDsToAppear(sessionIDs: string[], timeoutMs = 15_00
   throw new Error(`Timed out waiting for launched session panes to appear: ${sessionIDs.join(", ")}`)
 }
 
+async function waitForPaneToExist(paneID: string, timeoutMs = 15_000) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const output = await tmux(["list-panes", "-a", "-F", "#{pane_id}"]).catch(() => "")
+    if (output.split("\n").includes(paneID)) return
+    await sleep(250)
+  }
+  throw new Error(`Timed out waiting for pane ${paneID} to exist`)
+}
+
 async function main() {
   const root = process.cwd()
   const tmuxSession = `sidebar-sigint-${process.pid}`
@@ -53,6 +63,7 @@ async function main() {
   const workspace = await createTestWorkspace("sigint")
   const service = new LauncherService()
   let launchedSessionIDs: string[] = []
+  let externalPaneID: string | undefined
   const createdSessions: Array<{ directory: string; sessionID: string }> = []
 
   await execFileAsync("tmux", ["kill-session", "-t", tmuxSession]).catch(() => {})
@@ -91,6 +102,25 @@ async function main() {
       throw new Error("Could not determine sidebar pane ID")
     }
 
+    const thirdResult = await client.session.create({ directory: workspace })
+    const third = thirdResult.data as SessionRecord | undefined
+    if (!third) {
+      throw new Error("Could not create external session for the SIGINT cleanup test")
+    }
+    createdSessions.push({ directory: workspace, sessionID: third.id })
+
+    externalPaneID = await tmux([
+      "new-window",
+      "-d",
+      "-t",
+      tmuxSession,
+      "-P",
+      "-F",
+      "#{pane_id}",
+      `cd \"${workspace}\" && opencode attach http://127.0.0.1:${(await service.ensureReady()).port} --dir \"${workspace}\" --session ${third.id}`,
+    ])
+    await waitForPaneToExist(externalPaneID)
+
     await fs.writeFile(controlFile, `open:${first.id}\nopen:${second.id}\n`)
 
     const started = Date.now()
@@ -111,14 +141,17 @@ async function main() {
 
     await execFileAsync("tmux", ["send-keys", "-t", sidebarPaneID, "C-c"])
     await waitForSessionIDsToDisappear(launchedSessionIDs)
+    if (externalPaneID) {
+      await waitForPaneToExist(externalPaneID)
+    }
 
     console.log("sidebar-sigint-cleanup-ok")
   } finally {
-    await service.shutdown().catch(() => {})
     await cleanupTestSessions(
       service,
       [...createdSessions, ...launchedSessionIDs.map((sessionID) => ({ directory: workspace, sessionID }))],
     )
+    await service.shutdown().catch(() => {})
     await fs.rm(controlFile, { force: true }).catch(() => {})
     await execFileAsync("tmux", ["kill-session", "-t", tmuxSession]).catch(() => {})
   }
