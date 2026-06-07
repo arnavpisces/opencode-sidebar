@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 - 2026-06-08
+
+- Updated npm keywords.
+
 ## 0.3.0 - 2026-06-08
 
 - Added project folder hiding: press `H` on a directory row to hide it from the sidebar (with confirmation dialog). Hidden folders can be re-added via the Add project folder flow.
