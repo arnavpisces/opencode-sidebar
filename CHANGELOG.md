@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2 - 2026-06-12
+
+- Drastically reduced memory footprint: moved animation timers from App into isolated leaf components, cutting React reconciliations from 14,400/hr to ~720/hr and preventing yoga-layout C-heap accumulation.
+- Stabilized mouse event handler with useRef to stop stdin listener re-subscription cascade on every render.
+- Fixed mouse scrolling accuracy: scroll delta is now tracked imperatively via `scrollIndexRef` to avoid race conditions when multiple SGR chunks arrive before React re-renders.
+- Centered scroll window at viewport midpoint for smoother scroll feel.
+- Capped session fetch volume: added `MAX_TOTAL_SESSIONS=150`, `MAX_SESSIONS_PER_DIRECTORY=15`, and trimmed session objects to only needed fields.
+- Replaced `Set<string>` with `string[]` for small ID collections to reduce per-object overhead.
+- Increased refresh intervals: `WINDOW_POLL_INTERVAL_MS` 2s→5s, `MIN_REFRESH_MS` 1s→2s, `SNAPSHOT_DEBOUNCE_MS` 150ms→300ms.
+- Added `--max-old-space-size=512` to both Node launch paths to force aggressive V8 GC.
+- Fixed `launchedSessionIDs` leak on session delete; added `setRawMode(false)` on stdin teardown.
+- Cleaned stale entries from `expanded` state when directories are removed from the snapshot.
+
 ## 0.3.1 - 2026-06-08
 
 - Updated npm keywords.
