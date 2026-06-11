@@ -1,5 +1,6 @@
 import type { ActiveSessionRecord, DirectoryRecord, PaneRecord, ProjectRecord, SessionRecord, Snapshot } from "./types.js"
 import { directoryLabel, directorySubtitle } from "./util.js"
+import { MAX_SESSIONS_PER_DIRECTORY } from "./constants.js"
 
 function openSessionSet(panes: PaneRecord[]) {
   const result = new Set<string>()
@@ -50,8 +51,8 @@ export function buildSnapshot(input: {
       subtitle: directorySubtitle(directory, projectInfo?.root),
       pinned: input.pinnedDirectories.includes(directory),
       sessions: [],
-      openSessionIDs: new Set<string>(),
-      activeSessionIDs: new Set<string>(),
+      openSessionIDs: [],
+      activeSessionIDs: [],
     }
     directoryMap.set(directory, current)
     return current
@@ -70,15 +71,19 @@ export function buildSnapshot(input: {
     const record = ensureDirectory(session.directory)
     record.sessions.push(session)
     record.lastUpdated = Math.max(record.lastUpdated ?? 0, session.time.updated)
-    if (openedSessions.has(session.id)) {
-      record.openSessionIDs.add(session.id)
+    if (openedSessions.has(session.id) && !record.openSessionIDs.includes(session.id)) {
+      record.openSessionIDs.push(session.id)
     }
   }
 
   for (const activeSession of input.activeSessions ?? []) {
     const record = ensureDirectory(activeSession.directory)
-    record.activeSessionIDs.add(activeSession.sessionID)
-    record.openSessionIDs.add(activeSession.sessionID)
+    if (!record.activeSessionIDs.includes(activeSession.sessionID)) {
+      record.activeSessionIDs.push(activeSession.sessionID)
+    }
+    if (!record.openSessionIDs.includes(activeSession.sessionID)) {
+      record.openSessionIDs.push(activeSession.sessionID)
+    }
   }
 
   const pinnedRank = new Map(input.pinnedDirectories.map((directory, index) => [directory, index]))
@@ -86,7 +91,16 @@ export function buildSnapshot(input: {
   const directories = [...directoryMap.values()]
     .map((record) => ({
       ...record,
-      sessions: [...record.sessions].sort((a: SessionRecord, b: SessionRecord) => b.time.updated - a.time.updated),
+      sessions: [...record.sessions]
+        .sort((a: SessionRecord, b: SessionRecord) => b.time.updated - a.time.updated)
+        .slice(0, MAX_SESSIONS_PER_DIRECTORY)
+        .map((s) => ({
+          id: s.id,
+          title: s.title,
+          directory: s.directory,
+          time: { created: s.time.created, updated: s.time.updated },
+          status: s.status,
+        })),
     }))
     .sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1

@@ -6,6 +6,7 @@ import { promisify } from "node:util"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import {
   DEFAULT_PORT,
+  MAX_TOTAL_SESSIONS,
   PRIVATE_DIRECTORY_MODE,
   PRIVATE_FILE_MODE,
   SERVER_HOST,
@@ -176,7 +177,7 @@ async function fetchAllSessions(client: OpencodeClient) {
   const sessions: SessionRecord[] = []
   let cursor: number | undefined
 
-  while (sessions.length < 2000) {
+  while (sessions.length < MAX_TOTAL_SESSIONS) {
     const result = await client.experimental.session.list({
       roots: true,
       limit: SESSION_PAGE_LIMIT,
@@ -307,8 +308,11 @@ export class LauncherService {
   private startedServerPID?: number
   private readyPromise?: Promise<ReadyState>
   private snapshotPromise?: Promise<Snapshot>
+  private lastSnapshot?: Snapshot
+  private lastSnapshotTime = 0
   private readonly launchedSessionIDs = new Set<string>()
   private readonly notifier = new SoundNotifier()
+  private static readonly MIN_REFRESH_MS = 2000
 
   async ensureReady(): Promise<ReadyState> {
     if (this.client && this.baseUrl && this.port && (await isHealthy(this.port))) {
@@ -354,6 +358,11 @@ export class LauncherService {
   }
 
   async getSnapshot(): Promise<Snapshot> {
+    const now = Date.now()
+    if (this.lastSnapshot && now - this.lastSnapshotTime < LauncherService.MIN_REFRESH_MS) {
+      return this.lastSnapshot
+    }
+
     if (this.snapshotPromise) {
       return this.snapshotPromise
     }
@@ -395,6 +404,8 @@ export class LauncherService {
         questions,
         permissions,
       })
+      this.lastSnapshot = snapshot
+      this.lastSnapshotTime = Date.now()
       return snapshot
     })()
 
@@ -533,6 +544,7 @@ export class LauncherService {
       sessionID,
       directory,
     })
+    this.launchedSessionIDs.delete(sessionID)
   }
 
   async renameSession(directory: string, sessionID: string, title: string) {

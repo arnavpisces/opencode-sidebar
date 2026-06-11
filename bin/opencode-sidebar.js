@@ -87,7 +87,7 @@ async function runSidebarSupervised() {
   let restartCount = 0
 
   while (true) {
-    const result = await spawnAndWait(process.execPath, [entryPath], {
+    const result = await spawnAndWait(process.execPath, ["--max-old-space-size=512", entryPath], {
       env: runtimeEnv,
     }).catch((error) => {
       console.error(`[opencode-sidebar] Failed to start sidebar runtime: ${error.message}`)
@@ -112,7 +112,7 @@ async function runSidebarSupervised() {
 }
 
 if (!process.env.TMUX) {
-  const tmuxCommand = `while true; do OPENCODE_SIDEBAR_BACKEND=tmux ${quoteShell(process.execPath)} ${quoteShell(entryPath)}; code=$?; if [ "$code" -eq 0 ]; then exit 0; fi; printf '\n[opencode-sidebar] sidebar exited unexpectedly with code %s; restarting...\n' "$code"; sleep 0.35; done`
+  const tmuxCommand = `while true; do OPENCODE_SIDEBAR_BACKEND=tmux ${quoteShell(process.execPath)} --max-old-space-size=512 ${quoteShell(entryPath)}; code=$?; if [ "$code" -eq 0 ]; then exit 0; fi; printf '\n[opencode-sidebar] sidebar exited unexpectedly with code %s; restarting...\n' "$code"; sleep 0.35; done`
   spawnAndWait("tmux", ["new-session", "-A", "-s", sessionName, "-f", "destroy-unattached=on", "-c", process.cwd(), tmuxCommand], {
     env: runtimeEnv,
   })

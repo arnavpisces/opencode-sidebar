@@ -45,7 +45,7 @@ describe("buildSnapshot", () => {
 
     expect(snapshot.directories.map((item) => item.directory)).toEqual(["/tmp/zeta", "/tmp/alpha", "/tmp/beta"])
     expect(snapshot.directories[1].label).toBe("Alpha")
-    expect(snapshot.directories[1].openSessionIDs.has("session_a")).toBe(true)
+    expect(snapshot.directories[1].openSessionIDs.includes("session_a")).toBe(true)
   })
 
   test("preserves session runtime status metadata", () => {

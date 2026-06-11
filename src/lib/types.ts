@@ -70,8 +70,8 @@ export type DirectoryRecord = {
   subtitle: string
   pinned: boolean
   sessions: SessionRecord[]
-  openSessionIDs: Set<string>
-  activeSessionIDs: Set<string>
+  openSessionIDs: string[]
+  activeSessionIDs: string[]
   lastUpdated?: number
 }
 

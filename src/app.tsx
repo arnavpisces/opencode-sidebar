@@ -237,7 +237,7 @@ function clamp(value: number, min: number, max: number) {
 function windowRows<T>(rows: T[], selectedIndex: number, limit: number) {
   if (limit <= 0) return [] as T[]
   if (rows.length <= limit) return rows
-  const before = Math.floor(limit / 3)
+  const before = Math.floor(limit / 2)
   const start = clamp(selectedIndex - before, 0, Math.max(0, rows.length - limit))
   return rows.slice(start, start + limit)
 }
@@ -336,6 +336,44 @@ function mascotTitle(input: {
   return compactTitle
 }
 
+function AnimatedSpinner({ active }: { active: boolean }) {
+  const frame = useFrame(250)
+  if (!active) return null
+  return <Text>{SPINNER_FRAMES[frame % SPINNER_FRAMES.length]}</Text>
+}
+
+function LiveActivityGlyph({ active }: { active: boolean }) {
+  const frame = useFrame(250)
+  if (!active) return null
+  return <Text>{LIVE_FRAMES[frame % LIVE_FRAMES.length]}</Text>
+}
+
+function SelectAnimationGlyph({ selected }: { selected: boolean }) {
+  const frame = useFrame(250)
+  if (!selected) return <Text>[ ]</Text>
+  return <Text>[{SELECT_FRAMES[frame % SELECT_FRAMES.length]}]</Text>
+}
+
+function BlinkingCursor() {
+  const frame = useFrame(500)
+  return <Text>{frame % 2 === 0 ? "_" : " "}</Text>
+}
+
+function MascotBanner(props: {
+  compact: boolean
+  width: number
+  busy: boolean
+  activeCount: number
+  recentlyActive: boolean
+  error?: string
+  mode: Mode
+  theme: ThemeScheme
+}) {
+  const frame = useFrame(800)
+  const title = mascotTitle({ ...props, frame })
+  return <Text color={props.theme.semantic.highlight} bold>{fitLine(title, props.width)}</Text>
+}
+
 function Panel(props: {
   title: string
   width: number
@@ -391,13 +429,9 @@ export function App({
   const lastInteractionAtRef = useRef(Date.now())
   const lastMouseUpRef = useRef<{ key: string; at: number } | undefined>(undefined)
   const mousePressTargetRef = useRef<MousePressTarget | undefined>(undefined)
+  const scrollIndexRef = useRef(0)
   const { width, height } = useTerminalSize()
   const now = useNowTick()
-  const frame = useFrame(160)
-  const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length]
-  const liveGlyph = LIVE_FRAMES[frame % LIVE_FRAMES.length]
-  const selectGlyph = SELECT_FRAMES[frame % SELECT_FRAMES.length]
-  const inputCursor = frame % 2 === 0 ? "_" : " "
   const compactLayout = width < 38 || height < 28
   const panelGap = compactLayout ? 0 : 1
   const showBanner = height >= 12
@@ -416,6 +450,7 @@ export function App({
     return match >= 0 ? match : 0
   }, [rows, selectedKey])
   const selectedRow = rows[selectedIndex]
+  scrollIndexRef.current = selectedIndex
   const previewSession = useMemo(() => findSessionInSnapshot(snapshot, snapshot?.previewSessionID), [snapshot])
   const addProjectSelectedOption = addProjectOptions[Math.max(0, Math.min(addProjectOptionIndex, addProjectOptions.length - 1))]
 
@@ -483,7 +518,13 @@ export function App({
           setStatus(`Connected to ${next.baseUrl} [${service.describeBackend()}]`)
         }
         setExpanded((current) => {
-          const updated = { ...current }
+          const nextDirSet = new Set(next.directories.map((d) => d.directory))
+          const updated: Record<string, boolean> = {}
+          for (const dir of Object.keys(current)) {
+            if (nextDirSet.has(dir)) {
+              updated[dir] = current[dir]
+            }
+          }
           for (const [index, record] of next.directories.entries()) {
             if (!(record.directory in updated)) {
               updated[record.directory] = record.pinned || index < 6
@@ -879,7 +920,7 @@ export function App({
       setTemporaryStatus("Select a session to kill")
       return
     }
-    if (!selectedRow.record.openSessionIDs.has(selectedRow.session.id)) {
+    if (!selectedRow.record.openSessionIDs.includes(selectedRow.session.id)) {
       setTemporaryStatus("Selected session is not currently running")
       return
     }
@@ -1246,10 +1287,10 @@ export function App({
     if (!selectedRow) return "No project selected"
     if (selectedRow.kind === "action") return selectedRow.detail
     if (selectedRow.kind === "directory") {
-      const active = selectedRow.record.activeSessionIDs.size
+      const active = selectedRow.record.activeSessionIDs.length
       return `${selectedRow.record.sessions.length} sessions${active ? ` | ${active} live` : ""}`
     }
-    const active = selectedRow.record.activeSessionIDs.has(selectedRow.session.id)
+    const active = selectedRow.record.activeSessionIDs.includes(selectedRow.session.id)
     return `${selectedRow.session.id}${active ? " | live" : ""}`
   }, [selectedRow])
 
@@ -1259,18 +1300,7 @@ export function App({
     return truncate(label, compactLayout ? panelTextWidth : minimumWidth(panelTextWidth - 16))
   }, [compactLayout, panelTextWidth, previewSession])
 
-  const bannerTitle = mascotTitle({
-    compact: compactLayout,
-    width: panelTextWidth,
-    frame,
-    busy: hasWorkingSessions,
-    activeCount,
-    recentlyActive,
-    error,
-    mode,
-    theme,
-  })
-  const activityGlyph = hasWorkingSessions ? liveGlyph : activeCount > 0 ? "|" : "."
+  const activityGlyph = hasWorkingSessions ? "o" : activeCount > 0 ? "|" : "."
   const statusTitle = `STATUS / MATRIX [${activityGlyph}]`
   const showAddProjectModal = mode === "add-project"
   const showRenameSessionModal = mode === "rename-session"
@@ -1298,7 +1328,7 @@ export function App({
         metricLine("preview", `[${previewLabel}]`, panelTextWidth),
         metricLine("workspace", `[${directoryCount} D | ${sessionCount} S | ${activeCount} LIVE]`, panelTextWidth),
       ]
-  const statusMessageText = error ? `STATE      ERROR :: ${error}` : busy ? `STATE      WORK :: ${busy} [${spinner}]` : `STATE      LINK :: ${status}`
+  const statusMessageText = error ? `STATE      ERROR :: ${error}` : busy ? `STATE      WORK :: ${busy}` : `STATE      LINK :: ${status}`
   const statusMessageLines = wrapTextHard(statusMessageText, panelTextWidth)
   const shortcutItems = useMemo(() => [
     { key: "Enter", desc: "Load" },
@@ -1385,7 +1415,7 @@ export function App({
       ]
     : []
   const promptPrimary = mode === "search"
-    ? `/ ${inputValue}${inputCursor}`
+    ? `/ ${inputValue}`
     : selectedRow?.kind === "action" ? selectedRow.detail : selectedRow?.record.directory ?? "No project selected"
   const promptPrimaryLines = wrapTextHard(promptPrimary, panelTextWidth)
   const promptDetail = mode === "search"
@@ -1434,30 +1464,91 @@ export function App({
     if (!visibleRows.length) return 0
     return rows.findIndex((row) => row.key === visibleRows[0]?.key)
   }, [rows, visibleRows])
+
+  const mouseContextRef = useRef({
+    mode,
+    showBanner,
+    panelGap,
+    statusLines,
+    statusMessageLines,
+    deleteTarget,
+    deleteLines,
+    killTarget,
+    killLines,
+    hideTarget,
+    hideLines,
+    showAddProjectModal,
+    showRenameSessionModal,
+    showThemeModal,
+    addProjectLineEntries,
+    renameSessionLines,
+    themeLineEntries,
+    loading,
+    snapshot,
+    visibleRows,
+    rows,
+    selectedIndex,
+    scrollIndexRef,
+    toggleDirectory,
+    openRow,
+    beginAddProject,
+    setSelectedKey,
+  })
+  mouseContextRef.current = {
+    mode,
+    showBanner,
+    panelGap,
+    statusLines,
+    statusMessageLines,
+    deleteTarget,
+    deleteLines,
+    killTarget,
+    killLines,
+    hideTarget,
+    hideLines,
+    showAddProjectModal,
+    showRenameSessionModal,
+    showThemeModal,
+    addProjectLineEntries,
+    renameSessionLines,
+    themeLineEntries,
+    loading,
+    snapshot,
+    visibleRows,
+    rows,
+    selectedIndex,
+    scrollIndexRef,
+    toggleDirectory,
+    openRow,
+    beginAddProject,
+    setSelectedKey,
+  }
+
   const handleMouseSelection = useCallback(
     (input: string) => {
-      if (mode !== "browse") return false
+      const ctx = mouseContextRef.current
+      if (ctx.mode !== "browse") return false
 
       let projectRowsStartY = 2
-      if (showBanner) projectRowsStartY += 3
-      projectRowsStartY += panelGap
-      projectRowsStartY += 3 + statusLines.length + statusMessageLines.length
-      if (deleteTarget) projectRowsStartY += panelGap + 3 + deleteLines.length
-      if (killTarget) projectRowsStartY += panelGap + 3 + killLines.length
-      if (hideTarget) projectRowsStartY += panelGap + 3 + hideLines.length
-      if (showAddProjectModal) projectRowsStartY += panelGap + 3 + addProjectLineEntries.length
-      if (showRenameSessionModal) projectRowsStartY += panelGap + 3 + renameSessionLines.length
-      if (showThemeModal) projectRowsStartY += panelGap + 3 + themeLineEntries.length
-      projectRowsStartY += panelGap + 1
-      if (loading && !snapshot) projectRowsStartY += 1
-      if (!loading && snapshot?.directories.length === 0) projectRowsStartY += 1
+      if (ctx.showBanner) projectRowsStartY += 3
+      projectRowsStartY += ctx.panelGap
+      projectRowsStartY += 3 + ctx.statusLines.length + ctx.statusMessageLines.length
+      if (ctx.deleteTarget) projectRowsStartY += ctx.panelGap + 3 + ctx.deleteLines.length
+      if (ctx.killTarget) projectRowsStartY += ctx.panelGap + 3 + ctx.killLines.length
+      if (ctx.hideTarget) projectRowsStartY += ctx.panelGap + 3 + ctx.hideLines.length
+      if (ctx.showAddProjectModal) projectRowsStartY += ctx.panelGap + 3 + ctx.addProjectLineEntries.length
+      if (ctx.showRenameSessionModal) projectRowsStartY += ctx.panelGap + 3 + ctx.renameSessionLines.length
+      if (ctx.showThemeModal) projectRowsStartY += ctx.panelGap + 3 + ctx.themeLineEntries.length
+      projectRowsStartY += ctx.panelGap + 1
+      if (ctx.loading && !ctx.snapshot) projectRowsStartY += 1
+      if (!ctx.loading && ctx.snapshot?.directories.length === 0) projectRowsStartY += 1
 
       let handled = false
       let scrollDelta = 0
       for (const event of parseSgrMouseInput(input)) {
         if ((event.code & 64) !== 0) {
           if (event.release) continue
-          if (event.y < projectRowsStartY || event.y >= projectRowsStartY + visibleRows.length || !rows.length) continue
+          if (event.y < projectRowsStartY || event.y >= projectRowsStartY + ctx.visibleRows.length || !ctx.rows.length) continue
           scrollDelta += (event.code & 1) === 0 ? -1 : 1
           handled = true
           continue
@@ -1465,13 +1556,13 @@ export function App({
         if ((event.code & 3) !== 0) continue
 
         const rowIndex = event.y - projectRowsStartY
-        if (rowIndex < 0 || rowIndex >= visibleRows.length) {
+        if (rowIndex < 0 || rowIndex >= ctx.visibleRows.length) {
           if (event.release) {
             mousePressTargetRef.current = undefined
           }
           continue
         }
-        const row = visibleRows[rowIndex]
+        const row = ctx.visibleRows[rowIndex]
         if (!row) continue
 
         const inDirectoryToggle = row.kind === "directory" && event.x <= 5
@@ -1494,14 +1585,14 @@ export function App({
         handled = true
 
         if (pressedTarget.kind === "toggle" && row.kind === "directory") {
-          toggleDirectory(row.record)
+          ctx.toggleDirectory(row.record)
           continue
         }
 
-        setSelectedKey(row.key)
+        ctx.setSelectedKey(row.key)
 
         if (row.kind === "action") {
-          beginAddProject()
+          ctx.beginAddProject()
           continue
         }
 
@@ -1509,51 +1600,22 @@ export function App({
         const last = lastMouseUpRef.current
         if (last?.key === row.key && nowMs - last.at < 350) {
           lastMouseUpRef.current = undefined
-          void openRow(row)
+          void ctx.openRow(row)
         } else {
           lastMouseUpRef.current = { key: row.key, at: nowMs }
         }
       }
 
-      if (scrollDelta !== 0 && rows.length) {
-        setSelectedKey((currentKey) => {
-          const currentIdx = rows.findIndex((r) => rowKey(r) === currentKey)
-          if (currentIdx < 0) return currentKey
-          const nextIdx = Math.max(0, Math.min(currentIdx + scrollDelta, rows.length - 1))
-          return rowKey(rows[nextIdx])
-        })
+      if (scrollDelta !== 0 && ctx.rows.length) {
+        const currentIdx = ctx.scrollIndexRef.current
+        const nextIdx = Math.max(0, Math.min(currentIdx + scrollDelta, ctx.rows.length - 1))
+        ctx.scrollIndexRef.current = nextIdx
+        ctx.setSelectedKey(rowKey(ctx.rows[nextIdx]))
       }
 
       return handled
     },
-    [
-      addProjectLineEntries.length,
-      beginAddProject,
-      deleteLines.length,
-      deleteTarget,
-      hideLines.length,
-      hideTarget,
-      killLines.length,
-      killTarget,
-      loading,
-      mode,
-      panelGap,
-      renameSessionLines.length,
-      showAddProjectModal,
-      showBanner,
-      showRenameSessionModal,
-      showThemeModal,
-      snapshot,
-      statusLines.length,
-      statusMessageLines.length,
-      themeLineEntries.length,
-      toggleDirectory,
-      openRow,
-      visibleRows,
-      rows,
-      selectedIndex,
-      setSelectedKey,
-    ],
+    [],
   )
 
   useEffect(() => {
@@ -1569,13 +1631,27 @@ export function App({
 
     stdin.on("data", onData)
     return () => {
+      setRawMode(false)
       stdin.off("data", onData)
     }
-  }, [handleMouseSelection, mouseEnabled, setRawMode, stdin])
+  }, [mouseEnabled, stdin, setRawMode])
 
   return (
     <Box flexDirection="column" width={width} height={height} paddingX={1} paddingTop={1} backgroundColor={theme.base.background}>
-      {showBanner ? <Panel title={bannerTitle} width={panelTextWidth} borderColor={theme.semantic.highlight} titleColor={theme.semantic.highlight} /> : null}
+      {showBanner ? (
+        <Box width={panelOuterWidth} flexDirection="column" borderStyle="single" borderColor={theme.semantic.highlight} paddingX={1}>
+          <MascotBanner
+            compact={compactLayout}
+            width={panelTextWidth}
+            busy={hasWorkingSessions}
+            activeCount={activeCount}
+            recentlyActive={recentlyActive}
+            error={error}
+            mode={mode}
+            theme={theme}
+          />
+        </Box>
+      ) : null}
 
       <Box marginTop={panelGap}>
         <Panel title={statusTitle} width={panelTextWidth} borderColor={theme.semantic.border} titleColor={theme.semantic.info}>
@@ -1587,6 +1663,7 @@ export function App({
           {statusMessageLines.map((line, index) => (
             <Text key={`status-message-${index}`} color={error ? theme.semantic.error : busy ? theme.semantic.warning : theme.semantic.muted}>
               {fitLine(line, panelTextWidth)}
+              {busy && index === statusMessageLines.length - 1 ? <AnimatedSpinner active={true} /> : null}
             </Text>
           ))}
         </Panel>
@@ -1681,12 +1758,13 @@ export function App({
 
           if (row.kind === "action") {
             const suffix = "[ADD]"
-            const label = `${selected ? `[${selectGlyph}]` : "[ ]"} + ${row.label}`
+            const label = ` + ${row.label}`
             const availableWidth = minimumWidth(rowWidth - suffix.length - 1)
             return (
               <Box key={row.key} width={rowWidth} justifyContent="space-between">
                 <Text color={selected ? selectedForeground : theme.semantic.success} backgroundColor={selectedBackground} bold>
-                  {truncate(label, availableWidth)}
+                  <SelectAnimationGlyph selected={selected} />
+                  <Text>{truncate(label, availableWidth)}</Text>
                 </Text>
                 <Text color={selected ? selectedForeground : theme.semantic.muted} backgroundColor={selectedBackground}>
                   {suffix}
@@ -1697,17 +1775,18 @@ export function App({
 
           if (row.kind === "directory") {
             const expandedNow = mode === "search" ? true : expanded[row.record.directory] ?? row.record.pinned
-            const activeDirectoryCount = row.record.activeSessionIDs.size
+            const activeDirectoryCount = row.record.activeSessionIDs.length
             const hasWorkingSession = row.record.sessions.some((session) => sessionIsWorking(session.status))
             const hasCompleted = row.record.sessions.some((session) => sessionJustCompleted(session.status))
-            const marker = hasWorkingSession ? liveGlyph : activeDirectoryCount > 0 ? "|" : hasCompleted ? "*" : " "
+            const marker = activeDirectoryCount > 0 ? "|" : hasCompleted ? "*" : " "
             const suffix = activeDirectoryCount > 0 ? `${activeDirectoryCount}/${row.record.sessions.length}` : `${row.record.sessions.length}`
             const label = `${expandedNow ? "v" : ">"} ${row.record.label}`
             const availableWidth = minimumWidth(rowWidth - suffix.length - 5)
             return (
               <Box key={row.key} width={rowWidth} justifyContent="space-between">
                 <Text color={selected ? selectedForeground : theme.semantic.info} backgroundColor={selectedBackground} bold>
-                  {truncate(`${marker} ${label}`, availableWidth)}
+                  {hasWorkingSession ? <LiveActivityGlyph active={true} /> : <Text>{marker}</Text>}
+                  <Text>{truncate(` ${label}`, availableWidth - 1)}</Text>
                 </Text>
                 <Text color={selected ? selectedForeground : hasCompleted ? theme.semantic.error : theme.semantic.muted} backgroundColor={selectedBackground}>
                   {suffix}
@@ -1716,12 +1795,12 @@ export function App({
             )
           }
 
-          const isActive = row.record.activeSessionIDs.has(row.session.id)
+          const isActive = row.record.activeSessionIDs.includes(row.session.id)
           const isPreview = snapshot?.previewSessionID === row.session.id
           const isWorking = sessionIsWorking(row.session.status)
           const completion = sessionJustCompleted(row.session.status)
           const suffix = relativeTime(row.session.time.updated, now)
-          const marker = isWorking ? liveGlyph : completion ? "*" : isPreview ? ">" : isActive ? "|" : "."
+          const marker = completion ? "*" : isPreview ? ">" : isActive ? "|" : "."
           const leftWidth = minimumWidth(rowWidth - suffix.length - 1)
           const titleWidth = minimumWidth(leftWidth - 5)
           const color: TextColor = selected
@@ -1740,9 +1819,13 @@ export function App({
                 <Text color={color} backgroundColor={selectedBackground}>
                   {"|-- "}
                 </Text>
-                <Text color={markerColor} backgroundColor={selectedBackground}>
-                  {marker}
-                </Text>
+                {isWorking ? (
+                  <LiveActivityGlyph active={true} />
+                ) : (
+                  <Text color={markerColor} backgroundColor={selectedBackground}>
+                    {marker}
+                  </Text>
+                )}
                 <Text color={color} backgroundColor={selectedBackground}>
                   {truncate(` ${row.session.title || "New session"}`, titleWidth)}
                 </Text>
@@ -1778,11 +1861,18 @@ export function App({
 
       {mode !== "add-project" && mode !== "rename-session" && mode !== "theme" ? (
         <Box width={panelOuterWidth} marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? theme.semantic.border : theme.semantic.success} flexDirection="column" paddingX={1}>
-          {promptPrimaryLines.map((line, index) => (
-            <Text key={`prompt-primary-${index}`} color={mode === "browse" ? theme.base.foreground : theme.semantic.success}>
-              {fitLine(line, panelTextWidth)}
+          {mode === "search" ? (
+            <Text color={theme.semantic.success}>
+              {fitLine(`/ ${inputValue}`, panelTextWidth - 1)}
+              <BlinkingCursor />
             </Text>
-          ))}
+          ) : (
+            promptPrimaryLines.map((line, index) => (
+              <Text key={`prompt-primary-${index}`} color={mode === "browse" ? theme.base.foreground : theme.semantic.success}>
+                {fitLine(line, panelTextWidth)}
+              </Text>
+            ))
+          )}
           {promptDetail.map((line, index) => (
             <Text key={`prompt-${index}`} color={theme.semantic.muted}>
               {fitLine(line, panelTextWidth)}
