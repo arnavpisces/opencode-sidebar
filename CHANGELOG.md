@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3 - 2026-06-12
+
+- Eliminated terminal flickering: enabled Ink's incremental renderer so only changed lines are redrawn, removing the erase-repaint gap.
+- Deferred terminal background color changes to theme confirmation (Enter) instead of firing on every scroll keypress, preventing OSC 11 / SGR race conditions.
+- Bracket direct terminal background writes with synchronized output escapes to prevent interleaving with Ink's pipeline.
+
 ## 0.3.2 - 2026-06-12
 
 - Drastically reduced memory footprint: moved animation timers from App into isolated leaf components, cutting React reconciliations from 14,400/hr to ~720/hr and preventing yoga-layout C-heap accumulation.

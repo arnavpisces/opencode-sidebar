@@ -2,6 +2,9 @@ type WritableStreamLike = {
   write(chunk: string): unknown
 }
 
+const BSU = "\u001B[?2026h"
+const ESU = "\u001B[?2026l"
+
 function normalizeHexColor(color: string) {
   const trimmed = color.trim()
   if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed
@@ -33,7 +36,7 @@ export function writeTerminalBackground(stream: WritableStreamLike | undefined, 
   const sequence = terminalBackgroundSequence(color)
   if (!stream || !sequence) return
   try {
-    stream.write(sequence)
+    stream.write(BSU + sequence + ESU)
   } catch {
     // Terminal color control is best-effort.
   }
@@ -42,7 +45,7 @@ export function writeTerminalBackground(stream: WritableStreamLike | undefined, 
 export function resetTerminalBackground(stream: WritableStreamLike | undefined) {
   if (!stream) return
   try {
-    stream.write(terminalBackgroundResetSequence())
+    stream.write(BSU + terminalBackgroundResetSequence() + ESU)
   } catch {
     // Terminal color control is best-effort.
   }

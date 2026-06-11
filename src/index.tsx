@@ -53,6 +53,7 @@ process.on("unhandledRejection", startFatalExit)
 
 const instance = render(renderApp(), {
   exitOnCtrlC: false,
+  incrementalRendering: true,
   kittyKeyboard: {
     mode: "auto",
   },

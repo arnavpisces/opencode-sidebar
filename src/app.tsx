@@ -618,11 +618,6 @@ export function App({
   }, [service])
 
   useEffect(() => {
-    writeTerminalBackground(stdout, theme.base.background)
-    void service.setTerminalBackground(theme.base.background)
-  }, [service, stdout, theme.base.background])
-
-  useEffect(() => {
     return () => {
       resetTerminalBackground(stdout)
       void service.resetTerminalBackground()
@@ -720,6 +715,8 @@ export function App({
       try {
         await service.setThemeID(selectedThemeOption.id)
         setThemeID(selectedThemeOption.id)
+        writeTerminalBackground(stdout, getThemeScheme(selectedThemeOption.id).base.background)
+        void service.setTerminalBackground(getThemeScheme(selectedThemeOption.id).base.background)
         setTemporaryStatus(`Theme set to ${selectedThemeOption.name}`)
         setMode("browse")
       } catch (cause) {
