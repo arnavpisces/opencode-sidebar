@@ -2,6 +2,7 @@
 
 ## 0.3.5 - 2026-06-13
 
+- Fixed stale text persisting on screen: restored full-height rendering so Ink overwrites every terminal line each frame, preventing leftover content when layout shrinks.
 - Fixed root cause of terminal flickering: render at rows-1 so Ink always uses incremental log-update diffing instead of full clear-and-repaint (ESC[2J) on every frame.
 - Gated animation timer on activity: `useFrame(250)` only runs when sessions are busy, user is active, or search mode is on. Idle sidebar re-renders once per minute instead of 4×/sec.
 - Collapsed two independent animation timers (250ms + 800ms) into one: `slowFrame` derived as `Math.floor(animFrame / 3)`.

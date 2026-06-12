@@ -1507,7 +1507,7 @@ export function App({
     (showToolsPanel ? 3 + toolsLines.length + panelGap : 0) +
     (mode !== "add-project" && mode !== "rename-session" && mode !== "theme" ? 3 + promptPrimaryLines.length + promptDetail.length + panelGap : 0) +
     projectPanelStaticHeight
-  const visibleRowCount = Math.max(1, usableHeight - fixedHeight)
+  const visibleRowCount = Math.max(1, height - fixedHeight)
   const visibleRows = useMemo(() => windowRows(rows, selectedIndex, visibleRowCount), [rows, selectedIndex, visibleRowCount])
   const firstVisibleIndex = useMemo(() => {
     if (!visibleRows.length) return 0
@@ -1687,7 +1687,7 @@ export function App({
   }, [mouseEnabled, stdin, setRawMode])
 
   return (
-    <Box flexDirection="column" width={width} height={usableHeight} paddingX={1} paddingTop={1} backgroundColor={theme.base.background}>
+    <Box flexDirection="column" width={width} height={height} paddingX={1} paddingTop={1} backgroundColor={theme.base.background}>
       {showBanner ? (
         <Box width={panelOuterWidth} flexDirection="column" borderStyle="single" borderColor={theme.semantic.highlight} paddingX={1}>
           <MascotBanner
