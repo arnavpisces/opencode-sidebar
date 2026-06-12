@@ -128,9 +128,20 @@ export class NotificationTracker {
       }
     }
 
+    this.pruneStaleEntries(nextSessionByID)
     this.busySessionIDs = nextBusySessionIDs
     this.sessionByID = nextSessionByID
     return effects
+  }
+
+  private pruneStaleEntries(knownSessionIDs: Map<string, SessionMeta>) {
+    for (const id of this.sessionByID.keys()) {
+      if (!knownSessionIDs.has(id)) {
+        this.sessionByID.delete(id)
+        this.busySessionIDs.delete(id)
+        this.lastCompletionAt.delete(id)
+      }
+    }
   }
 
   syncPendingRequests(input: { questions: QuestionRequest[]; permissions: PermissionRequest[] }) {

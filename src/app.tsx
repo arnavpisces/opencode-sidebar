@@ -126,18 +126,19 @@ function themeOptionDisplay(option: ThemeOption) {
   return option.name
 }
 
+const ADD_PROJECT_ROW: SidebarRow = {
+  key: ADD_PROJECT_KEY,
+  kind: "action",
+  action: "add-project",
+  label: "Add project folder",
+  detail: "Autocomplete directories or enter a path",
+} as const
+
 function buildRows(snapshot: Snapshot | null, expanded: Record<string, boolean>, query: string): SidebarRow[] {
   const rows: SidebarRow[] = []
-  const addProjectRow: SidebarRow = {
-    key: ADD_PROJECT_KEY,
-    kind: "action",
-    action: "add-project",
-    label: "Add project folder",
-    detail: "Autocomplete directories or enter a path",
-  }
 
-  if (rowMatchesQuery(addProjectRow, query)) {
-    rows.push(addProjectRow)
+  if (rowMatchesQuery(ADD_PROJECT_ROW, query)) {
+    rows.push(ADD_PROJECT_ROW)
   }
 
   if (!snapshot) return rows
@@ -172,7 +173,7 @@ function buildRows(snapshot: Snapshot | null, expanded: Record<string, boolean>,
 function useNowTick() {
   const [value, setValue] = useState(Date.now())
   useEffect(() => {
-    const timer = setInterval(() => setValue(Date.now()), 30_000)
+    const timer = setInterval(() => setValue(Date.now()), 60_000)
     return () => clearInterval(timer)
   }, [])
   return value
@@ -336,26 +337,22 @@ function mascotTitle(input: {
   return compactTitle
 }
 
-function AnimatedSpinner({ active }: { active: boolean }) {
-  const frame = useFrame(250)
+function AnimatedSpinner({ active, frame }: { active: boolean; frame: number }) {
   if (!active) return null
   return <Text>{SPINNER_FRAMES[frame % SPINNER_FRAMES.length]}</Text>
 }
 
-function LiveActivityGlyph({ active }: { active: boolean }) {
-  const frame = useFrame(250)
+function LiveActivityGlyph({ active, frame }: { active: boolean; frame: number }) {
   if (!active) return null
   return <Text>{LIVE_FRAMES[frame % LIVE_FRAMES.length]}</Text>
 }
 
-function SelectAnimationGlyph({ selected }: { selected: boolean }) {
-  const frame = useFrame(250)
+function SelectAnimationGlyph({ selected, frame }: { selected: boolean; frame: number }) {
   if (!selected) return <Text>[ ]</Text>
   return <Text>[{SELECT_FRAMES[frame % SELECT_FRAMES.length]}]</Text>
 }
 
-function BlinkingCursor() {
-  const frame = useFrame(500)
+function BlinkingCursor({ frame }: { frame: number }) {
   return <Text>{frame % 2 === 0 ? "_" : " "}</Text>
 }
 
@@ -368,9 +365,9 @@ function MascotBanner(props: {
   error?: string
   mode: Mode
   theme: ThemeScheme
+  frame: number
 }) {
-  const frame = useFrame(800)
-  const title = mascotTitle({ ...props, frame })
+  const title = mascotTitle(props)
   return <Text color={props.theme.semantic.highlight} bold>{fitLine(title, props.width)}</Text>
 }
 
@@ -432,6 +429,8 @@ export function App({
   const scrollIndexRef = useRef(0)
   const { width, height } = useTerminalSize()
   const now = useNowTick()
+  const animFrame = useFrame(250)
+  const slowFrame = useFrame(800)
   const compactLayout = width < 38 || height < 28
   const panelGap = compactLayout ? 0 : 1
   const showBanner = height >= 12
@@ -702,10 +701,12 @@ export function App({
 
   const toggleDirectory = useCallback((record: DirectoryRecord, next?: boolean) => {
     lastInteractionAtRef.current = Date.now()
-    setExpanded((current) => ({
-      ...current,
-      [record.directory]: next ?? !current[record.directory],
-    }))
+    setExpanded((current) => {
+      const prev = current[record.directory]
+      const nextVal = next ?? !prev
+      if (prev === nextVal) return current
+      return { ...current, [record.directory]: nextVal }
+    })
   }, [])
 
   const commitInput = useCallback(async () => {
@@ -1009,8 +1010,8 @@ export function App({
     setTemporaryStatus("Theme selection cancelled")
   }, [mode, setTemporaryStatus])
 
-  useInput(
-    (input, key) => {
+  const inputHandlerRef = useRef<(input: string, key: any) => void>(() => {})
+  inputHandlerRef.current = (input, key) => {
       const loweredInput = input.toLowerCase()
       const isInterrupt = input === "\u0003" || (key.ctrl && input === "c")
       lastInteractionAtRef.current = Date.now()
@@ -1270,7 +1271,12 @@ export function App({
       if (key.rightArrow && selectedRow?.kind === "directory") {
         toggleDirectory(selectedRow.record, true)
       }
-    },
+  }
+
+  useInput(
+    useCallback((input: string, key: any) => {
+      inputHandlerRef.current?.(input, key)
+    }, []),
     { isActive: Boolean(process.stdin.isTTY) },
   )
 
@@ -1313,20 +1319,24 @@ export function App({
     return addProjectOptions.findIndex((option) => option.directory === visibleAddProjectOptions[0]?.directory)
   }, [addProjectOptions, visibleAddProjectOptions])
   const apiState = snapshot ? "CONNECTED" : error ? "DEGRADED" : "BOOTING"
-  const statusLines = compactLayout
-    ? [
-        metricLine("api", `[${apiState}]`, panelTextWidth),
-        metricLine("preview", `[${previewLabel}]`, panelTextWidth),
-        metricLine("workspace", `[${directoryCount} D | ${sessionCount} S | ${activeCount} LIVE]`, panelTextWidth),
-      ]
-    : [
-        metricLine("api", `[${apiState}]`, panelTextWidth),
-        metricLine("backend", `[${service.describeBackend().toUpperCase()}]`, panelTextWidth),
-        metricLine("preview", `[${previewLabel}]`, panelTextWidth),
-        metricLine("workspace", `[${directoryCount} D | ${sessionCount} S | ${activeCount} LIVE]`, panelTextWidth),
-      ]
+  const statusLines = useMemo(
+    () =>
+      compactLayout
+        ? [
+            metricLine("api", `[${apiState}]`, panelTextWidth),
+            metricLine("preview", `[${previewLabel}]`, panelTextWidth),
+            metricLine("workspace", `[${directoryCount} D | ${sessionCount} S | ${activeCount} LIVE]`, panelTextWidth),
+          ]
+        : [
+            metricLine("api", `[${apiState}]`, panelTextWidth),
+            metricLine("backend", `[${service.describeBackend().toUpperCase()}]`, panelTextWidth),
+            metricLine("preview", `[${previewLabel}]`, panelTextWidth),
+            metricLine("workspace", `[${directoryCount} D | ${sessionCount} S | ${activeCount} LIVE]`, panelTextWidth),
+          ],
+    [compactLayout, apiState, previewLabel, directoryCount, sessionCount, activeCount, panelTextWidth, service],
+  )
   const statusMessageText = error ? `STATE      ERROR :: ${error}` : busy ? `STATE      WORK :: ${busy}` : `STATE      LINK :: ${status}`
-  const statusMessageLines = wrapTextHard(statusMessageText, panelTextWidth)
+  const statusMessageLines = useMemo(() => wrapTextHard(statusMessageText, panelTextWidth), [statusMessageText, panelTextWidth])
   const shortcutItems = useMemo(() => [
     { key: "Enter", desc: "Load" },
     { key: "Double-click", desc: "Open" },
@@ -1342,103 +1352,133 @@ export function App({
     { key: "R", desc: "Restart" },
     { key: "Q", desc: "Quit" },
   ], [])
-  const mouseDesc = mouseEnabled ? "Click + arrow toggle enabled" : "Enable tmux mouse"
-  const shortcutDesc = shortcutItems.map((s) => `[${s.key}] ${s.desc}`).concat([`[Mouse] ${mouseDesc}`]).join("  ")
-  const toolsLines = wrapTextHard(shortcutDesc, panelTextWidth)
-  const addProjectLineEntries: ModalLineEntry[] = showAddProjectModal
-    ? [
-        ...wrapTextHard(`Path :: ${inputValue}`, panelTextWidth).map((line) => ({
-          line,
-          color: theme.semantic.success as TextColor,
-        })),
-        ...wrapTextHard("Autocomplete matches directories like OpenCode's @ picker. Absolute and ~/ paths still work.", panelTextWidth).map((line) => ({
-          line,
-          color: theme.base.foreground as TextColor,
-        })),
-        ...(addProjectLoading
-          ? wrapTextHard("Searching directories...", panelTextWidth).map((line) => ({
+  const toolsLines = useMemo(() => {
+    const mouseDesc = mouseEnabled ? "Click + arrow toggle enabled" : "Enable tmux mouse"
+    const shortcutDesc = shortcutItems.map((s) => `[${s.key}] ${s.desc}`).concat([`[Mouse] ${mouseDesc}`]).join("  ")
+    return wrapTextHard(shortcutDesc, panelTextWidth)
+  }, [mouseEnabled, panelTextWidth, shortcutItems])
+  const addProjectLineEntries: ModalLineEntry[] = useMemo(
+    () =>
+      showAddProjectModal
+        ? [
+            ...wrapTextHard(`Path :: ${inputValue}`, panelTextWidth).map((line) => ({
+              line,
+              color: theme.semantic.success as TextColor,
+            })),
+            ...wrapTextHard("Autocomplete matches directories like OpenCode's @ picker. Absolute and ~/ paths still work.", panelTextWidth).map((line) => ({
               line,
               color: theme.base.foreground as TextColor,
-            }))
-          : visibleAddProjectOptions.length > 0
-          ? visibleAddProjectOptions.flatMap((option, visibleIndex) => {
-              const index = addProjectFirstVisibleIndex + visibleIndex
-              const selected = index === addProjectOptionIndex
-              return dropdownOptionLines(selected ? ">" : " ", optionDisplay(option), panelTextWidth).map((line) => ({
+            })),
+            ...(addProjectLoading
+              ? wrapTextHard("Searching directories...", panelTextWidth).map((line) => ({
+                  line,
+                  color: theme.base.foreground as TextColor,
+                }))
+              : visibleAddProjectOptions.length > 0
+              ? visibleAddProjectOptions.flatMap((option, visibleIndex) => {
+                  const index = addProjectFirstVisibleIndex + visibleIndex
+                  const selected = index === addProjectOptionIndex
+                  return dropdownOptionLines(selected ? ">" : " ", optionDisplay(option), panelTextWidth).map((line) => ({
+                    line,
+                    color: selected ? theme.semantic.selectionFg : theme.base.foreground,
+                    backgroundColor: selected ? theme.semantic.selectionBg : undefined,
+                  }))
+                })
+              : wrapTextHard("No matching directories. Press Enter to add the typed path.", panelTextWidth).map((line) => ({
+                  line,
+                  color: theme.base.foreground as TextColor,
+                }))),
+            ...wrapTextHard("[Up/Down] Choose  [Enter] Add  [Esc] Cancel  [Opt+Delete/Shift+Delete] Clear", panelTextWidth).map((line) => ({
+              line,
+              color: theme.semantic.warning as TextColor,
+            })),
+          ]
+        : [],
+    [showAddProjectModal, inputValue, panelTextWidth, theme, addProjectLoading, visibleAddProjectOptions, addProjectFirstVisibleIndex, addProjectOptionIndex],
+  )
+  const renameSessionLines = useMemo(
+    () =>
+      showRenameSessionModal
+        ? [
+            ...wrapTextHard(`Title :: ${inputValue}`, panelTextWidth),
+            ...wrapTextHard("Give the selected session a new title.", panelTextWidth),
+            ...wrapTextHard("[Enter] Rename  [Esc] Cancel  [Opt+Delete/Shift+Delete] Clear", panelTextWidth),
+          ]
+        : [],
+    [showRenameSessionModal, inputValue, panelTextWidth],
+  )
+  const themeLineEntries: ModalLineEntry[] = useMemo(
+    () =>
+      showThemeModal
+        ? [
+            ...wrapTextHard(`Theme :: ${selectedThemeOption?.name ?? theme.name}`, panelTextWidth).map((line) => ({
+              line,
+              color: theme.semantic.highlight as TextColor,
+            })),
+            ...wrapTextHard("Choose a color scheme for the sidebar.", panelTextWidth).map((line) => ({
+              line,
+              color: theme.base.foreground as TextColor,
+            })),
+            ...themeOptions.flatMap((option, index) => {
+              const selected = index === themeOptionIndex
+              return wrapTextHard(`${selected ? ">" : " "} ${themeOptionDisplay(option)}`, panelTextWidth).map((line) => ({
                 line,
                 color: selected ? theme.semantic.selectionFg : theme.base.foreground,
                 backgroundColor: selected ? theme.semantic.selectionBg : undefined,
               }))
-            })
-          : wrapTextHard("No matching directories. Press Enter to add the typed path.", panelTextWidth).map((line) => ({
+            }),
+            ...wrapTextHard("[Up/Down] Choose  [Enter] Apply  [Esc] Cancel", panelTextWidth).map((line) => ({
               line,
-              color: theme.base.foreground as TextColor,
-            }))),
-        ...wrapTextHard("[Up/Down] Choose  [Enter] Add  [Esc] Cancel  [Opt+Delete/Shift+Delete] Clear", panelTextWidth).map((line) => ({
-          line,
-          color: theme.semantic.warning as TextColor,
-        })),
-      ]
-    : []
-  const renameSessionLines = showRenameSessionModal
-    ? [
-        ...wrapTextHard(`Title :: ${inputValue}`, panelTextWidth),
-        ...wrapTextHard("Give the selected session a new title.", panelTextWidth),
-        ...wrapTextHard("[Enter] Rename  [Esc] Cancel  [Opt+Delete/Shift+Delete] Clear", panelTextWidth),
-      ]
-    : []
-  const themeLineEntries: ModalLineEntry[] = showThemeModal
-    ? [
-        ...wrapTextHard(`Theme :: ${selectedThemeOption?.name ?? theme.name}`, panelTextWidth).map((line) => ({
-          line,
-          color: theme.semantic.highlight as TextColor,
-        })),
-        ...wrapTextHard("Choose a color scheme for the sidebar.", panelTextWidth).map((line) => ({
-          line,
-          color: theme.base.foreground as TextColor,
-        })),
-        ...themeOptions.flatMap((option, index) => {
-          const selected = index === themeOptionIndex
-          return wrapTextHard(`${selected ? ">" : " "} ${themeOptionDisplay(option)}`, panelTextWidth).map((line) => ({
-            line,
-            color: selected ? theme.semantic.selectionFg : theme.base.foreground,
-            backgroundColor: selected ? theme.semantic.selectionBg : undefined,
-          }))
-        }),
-        ...wrapTextHard("[Up/Down] Choose  [Enter] Apply  [Esc] Cancel", panelTextWidth).map((line) => ({
-          line,
-          color: theme.semantic.warning as TextColor,
-        })),
-      ]
-    : []
+              color: theme.semantic.warning as TextColor,
+            })),
+          ]
+        : [],
+    [showThemeModal, selectedThemeOption, theme, panelTextWidth, themeOptions, themeOptionIndex],
+  )
   const promptPrimary = mode === "search"
     ? `/ ${inputValue}`
     : selectedRow?.kind === "action" ? selectedRow.detail : selectedRow?.record.directory ?? "No project selected"
-  const promptPrimaryLines = wrapTextHard(promptPrimary, panelTextWidth)
-  const promptDetail = mode === "search"
-    ? ["[Enter] submit  [Esc] cancel"]
-    : wrapTextHard(rows.length > 0 ? `${selectedIndex + 1}/${rows.length}  ${detail}` : `FOCUS ${detail}`, panelTextWidth)
-  const deleteLines = deleteTarget
-    ? [
-        `Delete session \"${truncate(deleteTarget.title, minimumWidth(panelTextWidth - 18))}\"?`,
-        truncate(deleteTarget.directory, panelTextWidth),
-        "[Enter/Y] confirm  [Esc/N] cancel",
-      ]
-    : []
-  const killLines = killTarget
-    ? [
-        `Kill running window for \"${truncate(killTarget.title, minimumWidth(panelTextWidth - 22))}\"?`,
-        truncate(killTarget.directory, panelTextWidth),
-        "[Enter/Y] confirm  [Esc/N] cancel",
-      ]
-    : []
-  const hideLines = hideTarget
-    ? [
-        `Hide project folder \"${truncate(hideTarget.label, minimumWidth(panelTextWidth - 22))}\"?`,
-        truncate(hideTarget.directory, panelTextWidth),
-        "[Enter/Y] confirm  [Esc/N] cancel",
-      ]
-    : []
+  const promptPrimaryLines = useMemo(() => wrapTextHard(promptPrimary, panelTextWidth), [promptPrimary, panelTextWidth])
+  const promptDetail = useMemo(
+    () =>
+      mode === "search"
+        ? ["[Enter] submit  [Esc] cancel"]
+        : wrapTextHard(rows.length > 0 ? `${selectedIndex + 1}/${rows.length}  ${detail}` : `FOCUS ${detail}`, panelTextWidth),
+    [mode, rows.length, selectedIndex, detail, panelTextWidth],
+  )
+  const deleteLines = useMemo(
+    () =>
+      deleteTarget
+        ? [
+            `Delete session "${truncate(deleteTarget.title, minimumWidth(panelTextWidth - 18))}"?`,
+            truncate(deleteTarget.directory, panelTextWidth),
+            "[Enter/Y] confirm  [Esc/N] cancel",
+          ]
+        : [],
+    [deleteTarget, panelTextWidth],
+  )
+  const killLines = useMemo(
+    () =>
+      killTarget
+        ? [
+            `Kill running window for "${truncate(killTarget.title, minimumWidth(panelTextWidth - 22))}"?`,
+            truncate(killTarget.directory, panelTextWidth),
+            "[Enter/Y] confirm  [Esc/N] cancel",
+          ]
+        : [],
+    [killTarget, panelTextWidth],
+  )
+  const hideLines = useMemo(
+    () =>
+      hideTarget
+        ? [
+            `Hide project folder "${truncate(hideTarget.label, minimumWidth(panelTextWidth - 22))}"?`,
+            truncate(hideTarget.directory, panelTextWidth),
+            "[Enter/Y] confirm  [Esc/N] cancel",
+          ]
+        : [],
+    [hideTarget, panelTextWidth],
+  )
   const projectHeader = sectionRule(rows.length ? `PROJECT MATRIX ${selectedIndex + 1}/${rows.length}` : "PROJECT MATRIX", sectionTextWidth)
   const projectFooter = rows.length > 0 ? truncate(`FOCUS :: ${selectedIndex + 1}/${rows.length} :: ${detail}`, sectionTextWidth) : truncate(`FOCUS :: ${detail}`, sectionTextWidth)
 
@@ -1462,36 +1502,36 @@ export function App({
     return rows.findIndex((row) => row.key === visibleRows[0]?.key)
   }, [rows, visibleRows])
 
-  const mouseContextRef = useRef({
-    mode,
-    showBanner,
-    panelGap,
-    statusLines,
-    statusMessageLines,
-    deleteTarget,
-    deleteLines,
-    killTarget,
-    killLines,
-    hideTarget,
-    hideLines,
-    showAddProjectModal,
-    showRenameSessionModal,
-    showThemeModal,
-    addProjectLineEntries,
-    renameSessionLines,
-    themeLineEntries,
-    loading,
-    snapshot,
-    visibleRows,
-    rows,
-    selectedIndex,
-    scrollIndexRef,
-    toggleDirectory,
-    openRow,
-    beginAddProject,
-    setSelectedKey,
-  })
-  mouseContextRef.current = {
+  const mouseContextRef = useRef<{
+    mode: Mode
+    showBanner: boolean
+    panelGap: number
+    statusLines: string[]
+    statusMessageLines: string[]
+    deleteTarget: DeleteTarget | undefined
+    deleteLines: string[]
+    killTarget: KillTarget | undefined
+    killLines: string[]
+    hideTarget: HideTarget | undefined
+    hideLines: string[]
+    showAddProjectModal: boolean
+    showRenameSessionModal: boolean
+    showThemeModal: boolean
+    addProjectLineEntries: ModalLineEntry[]
+    renameSessionLines: string[]
+    themeLineEntries: ModalLineEntry[]
+    loading: boolean
+    snapshot: Snapshot | null
+    visibleRows: SidebarRow[]
+    rows: SidebarRow[]
+    selectedIndex: number
+    scrollIndexRef: React.MutableRefObject<number>
+    toggleDirectory: (record: DirectoryRecord, next?: boolean) => void
+    openRow: (row: SidebarRow) => Promise<void>
+    beginAddProject: () => void
+    setSelectedKey: React.Dispatch<React.SetStateAction<string | undefined>>
+  }>(null!)
+  const mouseContext = {
     mode,
     showBanner,
     panelGap,
@@ -1520,6 +1560,7 @@ export function App({
     beginAddProject,
     setSelectedKey,
   }
+  mouseContextRef.current = mouseContext
 
   const handleMouseSelection = useCallback(
     (input: string) => {
@@ -1646,6 +1687,7 @@ export function App({
             error={error}
             mode={mode}
             theme={theme}
+            frame={slowFrame}
           />
         </Box>
       ) : null}
@@ -1660,7 +1702,7 @@ export function App({
           {statusMessageLines.map((line, index) => (
             <Text key={`status-message-${index}`} color={error ? theme.semantic.error : busy ? theme.semantic.warning : theme.semantic.muted}>
               {fitLine(line, panelTextWidth)}
-              {busy && index === statusMessageLines.length - 1 ? <AnimatedSpinner active={true} /> : null}
+              {busy && index === statusMessageLines.length - 1 ? <AnimatedSpinner active={true} frame={animFrame} /> : null}
             </Text>
           ))}
         </Panel>
@@ -1760,7 +1802,7 @@ export function App({
             return (
               <Box key={row.key} width={rowWidth} justifyContent="space-between">
                 <Text color={selected ? selectedForeground : theme.semantic.success} backgroundColor={selectedBackground} bold>
-                  <SelectAnimationGlyph selected={selected} />
+                  <SelectAnimationGlyph selected={selected} frame={animFrame} />
                   <Text>{truncate(label, availableWidth)}</Text>
                 </Text>
                 <Text color={selected ? selectedForeground : theme.semantic.muted} backgroundColor={selectedBackground}>
@@ -1782,7 +1824,7 @@ export function App({
             return (
               <Box key={row.key} width={rowWidth} justifyContent="space-between">
                 <Text color={selected ? selectedForeground : theme.semantic.info} backgroundColor={selectedBackground} bold>
-                  {hasWorkingSession ? <LiveActivityGlyph active={true} /> : <Text>{marker}</Text>}
+                  {hasWorkingSession ? <LiveActivityGlyph active={true} frame={animFrame} /> : <Text>{marker}</Text>}
                   <Text>{truncate(` ${label}`, availableWidth - 1)}</Text>
                 </Text>
                 <Text color={selected ? selectedForeground : hasCompleted ? theme.semantic.error : theme.semantic.muted} backgroundColor={selectedBackground}>
@@ -1817,7 +1859,7 @@ export function App({
                   {"|-- "}
                 </Text>
                 {isWorking ? (
-                  <LiveActivityGlyph active={true} />
+                  <LiveActivityGlyph active={true} frame={animFrame} />
                 ) : (
                   <Text color={markerColor} backgroundColor={selectedBackground}>
                     {marker}
@@ -1859,10 +1901,10 @@ export function App({
       {mode !== "add-project" && mode !== "rename-session" && mode !== "theme" ? (
         <Box width={panelOuterWidth} marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? theme.semantic.border : theme.semantic.success} flexDirection="column" paddingX={1}>
           {mode === "search" ? (
-            <Text color={theme.semantic.success}>
-              {fitLine(`/ ${inputValue}`, panelTextWidth - 1)}
-              <BlinkingCursor />
-            </Text>
+              <Text color={theme.semantic.success}>
+                {fitLine(`/ ${inputValue}`, panelTextWidth - 1)}
+                <BlinkingCursor frame={animFrame} />
+              </Text>
           ) : (
             promptPrimaryLines.map((line, index) => (
               <Text key={`prompt-primary-${index}`} color={mode === "browse" ? theme.base.foreground : theme.semantic.success}>

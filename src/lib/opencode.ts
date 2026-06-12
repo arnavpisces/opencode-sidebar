@@ -310,6 +310,8 @@ export class LauncherService {
   private snapshotPromise?: Promise<Snapshot>
   private lastSnapshot?: Snapshot
   private lastSnapshotTime = 0
+  private cachedState?: { state: Awaited<ReturnType<typeof loadState>>; at: number }
+  private static readonly STATE_CACHE_MS = 10_000
   private readonly launchedSessionIDs = new Set<string>()
   private readonly notifier = new SoundNotifier()
   private static readonly MIN_REFRESH_MS = 2000
@@ -357,6 +359,16 @@ export class LauncherService {
     }
   }
 
+  private async getCachedState() {
+    const now = Date.now()
+    if (this.cachedState && now - this.cachedState.at < LauncherService.STATE_CACHE_MS) {
+      return this.cachedState.state
+    }
+    const state = await loadState()
+    this.cachedState = { state, at: now }
+    return state
+  }
+
   async getSnapshot(): Promise<Snapshot> {
     const now = Date.now()
     if (this.lastSnapshot && now - this.lastSnapshotTime < LauncherService.MIN_REFRESH_MS) {
@@ -368,9 +380,10 @@ export class LauncherService {
     }
 
     this.snapshotPromise = (async () => {
+      this.lastSnapshot = undefined
       const [{ client, baseUrl, port }, state, activeSessions, previewSessionID] = await Promise.all([
         this.ensureReady(),
-        loadState(),
+        this.getCachedState(),
         listActiveSessions(),
         getPreviewSessionID(),
       ])
@@ -432,11 +445,12 @@ export class LauncherService {
         ? state.pinnedDirectories
         : [...state.pinnedDirectories, directory],
     }))
+    this.cachedState = undefined
     return directory
   }
 
   async autocompleteDirectories(rawQuery: string, limit = 12) {
-    const [{ client }, state] = await Promise.all([this.ensureReady(), loadState()])
+    const [{ client }, state] = await Promise.all([this.ensureReady(), this.getCachedState()])
     const normalized = normalizeDirectoryQuery(rawQuery)
 
     if (normalized.absolute) {
@@ -476,6 +490,7 @@ export class LauncherService {
       ...state,
       pinnedDirectories: state.pinnedDirectories.filter((item) => item !== directory),
     }))
+    this.cachedState = undefined
   }
 
   async hideDirectory(directory: string) {
@@ -486,6 +501,7 @@ export class LauncherService {
         ? state.hiddenDirectories
         : [...state.hiddenDirectories, directory],
     }))
+    this.cachedState = undefined
   }
 
   async getThemeID() {
@@ -497,6 +513,7 @@ export class LauncherService {
       ...state,
       themeID,
     }))
+    this.cachedState = undefined
     return themeID
   }
 
@@ -644,14 +661,18 @@ export class LauncherService {
     ;(async () => {
       while (!signal.aborted) {
         try {
-          const events = await client.global.event({ signal })
-          for await (const event of events.stream) {
-            if (signal.aborted) break
-            this.notifier.handleEvent({
-              directory: event.directory,
-              event: event.payload,
-            })
-            invalidate()
+          const response = await client.global.event({ signal })
+          try {
+            for await (const event of response.stream) {
+              if (signal.aborted) break
+              this.notifier.handleEvent({
+                directory: event.directory,
+                event: event.payload,
+              })
+              invalidate()
+            }
+          } finally {
+            response.stream?.return?.(undefined)
           }
         } catch {
           if (signal.aborted) break

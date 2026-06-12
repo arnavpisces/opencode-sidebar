@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.4 - 2026-06-13
+
+- Eliminated animation timer proliferation: replaced N independent `setInterval` hooks (one per animated component) with 2 shared timers (250ms and 800ms), cutting React reconciliations from ~4/sec to 2/sec and removing the primary flickering source.
+- Stabilized `useInput` handler via ref pattern so stdin subscribe/unsubscribe no longer fires on every animation-driven render.
+- Fixed SSE stream leak: added `finally` block with `stream.return()` to release zombie HTTP response references after reconnects.
+- Cleared `lastSnapshot` before rebuilding to prevent peak memory holding two full snapshots simultaneously.
+- Added `pruneStaleEntries()` to `NotificationTracker` to evict sessions and busy/completion maps for deleted sessions between snapshot syncs.
+- Memoized 10 computed arrays in the render tree (`statusLines`, `statusMessageLines`, `toolsLines`, modal line arrays, prompt arrays) to avoid ~40 allocations/second from animation-triggered re-renders.
+- Simplified `mouseContextRef` to a single typed ref assignment, removing duplicate 20-field object literal on every render.
+- Cached `loadState()` with 10s TTL to eliminate redundant disk I/O on every snapshot refresh; cache invalidated on writes.
+- Hoisted static `ADD_PROJECT_ROW` to module scope to avoid recreating identical object on every `buildRows` call.
+- Optimized `toggleDirectory` to short-circuit when expanded value is unchanged.
+- Increased `useNowTick` interval from 30s to 60s to match `relativeTime()` minute granularity.
+
 ## 0.3.3 - 2026-06-12
 
 - Eliminated terminal flickering: enabled Ink's incremental renderer so only changed lines are redrawn, removing the erase-repaint gap.
