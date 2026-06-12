@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.5 - 2026-06-13
+
+- Fixed root cause of terminal flickering: render at rows-1 so Ink always uses incremental log-update diffing instead of full clear-and-repaint (ESC[2J) on every frame.
+- Gated animation timer on activity: `useFrame(250)` only runs when sessions are busy, user is active, or search mode is on. Idle sidebar re-renders once per minute instead of 4×/sec.
+- Collapsed two independent animation timers (250ms + 800ms) into one: `slowFrame` derived as `Math.floor(animFrame / 3)`.
+- Added snapshot fingerprinting: unchanged snapshots return the same object reference so `setSnapshot` bails and downstream `useMemo` caches are preserved.
+- Added `setExpanded` bail-out: returns current state when no directory was added or removed, defeating React's reconciliation skip.
+- Batched tmux spawns: `getPreviewSessionMeta` collapsed from 6 spawns to 1, `isMouseModeEnabled` collapsed from 3 to 2, `getSessionName` cached at module level.
+- Re-keyed mouse mode polling from `snapshot?.loadedAt` to a 60s interval.
+- SSE reconnect: per-attempt `AbortController` prevents listener accumulation across reconnects; exponential backoff (1s→30s cap) replaces fixed 1s retry.
+- Killed orphaned `opencode serve` processes: `ensureReady` now stops the old server before spawning a replacement.
+- Added optional instrumentation (`OPENCODE_SIDEBAR_MEMLOG=1`): periodic RSS/heap logging to memlog.txt and SIGUSR2 heap snapshot support.
+- Fixed mouse click offset: adjusted `projectRowsStartY` to account for root box `paddingTop`, so clicks land on the correct row.
+- Fixed mouse mode detection: restored fallback to global `mouse` option since `mouse_any_flag` only reflects active button presses, not the enabled setting.
+
 ## 0.3.4 - 2026-06-13
 
 - Eliminated animation timer proliferation: replaced N independent `setInterval` hooks (one per animated component) with 2 shared timers (250ms and 800ms), cutting React reconciliations from ~4/sec to 2/sec and removing the primary flickering source.

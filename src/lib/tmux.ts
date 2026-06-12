@@ -6,6 +6,7 @@ import { sessionWindowTitle, tmuxWindowName } from "./util.js"
 
 const execFileAsync = promisify(execFile)
 let cachedRightPaneID: string | undefined
+let cachedSessionName: string | undefined
 const SESSION_OPTION = "@opencode_session_id"
 const DIRECTORY_OPTION = "@opencode_directory"
 const TITLE_OPTION = "@opencode_title"
@@ -45,16 +46,16 @@ export async function getCurrentPaneID() {
 }
 
 export async function getSessionName() {
-  return runTmux(["display-message", "-p", "#{session_name}"])
+  if (cachedSessionName) return cachedSessionName
+  cachedSessionName = await runTmux(["display-message", "-p", "#{session_name}"])
+  return cachedSessionName
 }
 
 export async function isMouseModeEnabled() {
-  const values = await Promise.all([
-    runTmux(["display-message", "-p", "#{?mouse_any_flag,1,0}"]).catch(() => "0"),
-    runTmux(["show-options", "-gv", "mouse"]).catch(() => "off"),
-    runTmux(["show-window-options", "-gv", "mouse"]).catch(() => "off"),
-  ])
-  return values.some((value) => value === "1" || value === "on")
+  const flag = await runTmux(["display-message", "-p", "#{?mouse_any_flag,1,0}"]).catch(() => "0")
+  if (flag === "1") return true
+  const global = await runTmux(["show-options", "-gv", "mouse"]).catch(() => "off")
+  return global === "on" || global === "1"
 }
 
 export async function setCurrentPaneBackground(background: string) {
@@ -219,17 +220,22 @@ export async function getPreviewSession() {
 }
 
 export async function getPreviewSessionMeta() {
-  const sessionID = await getPreviewSession()
-  if (!sessionID) return undefined
   const session = await getSessionName()
-  const directory = await runTmux(["show-options", "-v", "-t", session, PREVIEW_DIRECTORY_OPTION]).catch(() => "")
-  const title = await runTmux(["show-options", "-v", "-t", session, PREVIEW_TITLE_OPTION]).catch(() => "")
-  const paneID = await runTmux(["show-options", "-v", "-t", session, PREVIEW_PANE_OPTION]).catch(() => "")
+  const output = await runTmux([
+    "display-message",
+    "-p",
+    "-t",
+    session,
+    `#{${PREVIEW_SESSION_OPTION}}\t#{${PREVIEW_DIRECTORY_OPTION}}\t#{${PREVIEW_TITLE_OPTION}}\t#{${PREVIEW_PANE_OPTION}}`,
+  ]).catch(() => "")
+  if (!output) return undefined
+  const [sessionID, directory, title, paneID] = output.split("\t")
+  if (!sessionID) return undefined
   return {
     sessionID,
-    directory,
-    title,
-    paneID,
+    directory: directory || "",
+    title: title || "",
+    paneID: paneID || "",
   }
 }
 

@@ -310,6 +310,7 @@ export class LauncherService {
   private snapshotPromise?: Promise<Snapshot>
   private lastSnapshot?: Snapshot
   private lastSnapshotTime = 0
+  private lastSnapshotFingerprint?: string
   private cachedState?: { state: Awaited<ReturnType<typeof loadState>>; at: number }
   private static readonly STATE_CACHE_MS = 10_000
   private readonly launchedSessionIDs = new Set<string>()
@@ -330,6 +331,10 @@ export class LauncherService {
     }
 
     this.readyPromise = (async () => {
+      if (this.startedServerPID && this.port) {
+        await stopDetachedServer(this.startedServerPID, this.port).catch(() => {})
+        this.startedServerPID = undefined
+      }
       this.client = undefined
       this.baseUrl = undefined
       this.port = undefined
@@ -417,8 +422,16 @@ export class LauncherService {
         questions,
         permissions,
       })
+
+      const fingerprint = JSON.stringify([snapshot.directories, snapshot.activeSessions, snapshot.previewSessionID, snapshot.baseUrl])
+      if (this.lastSnapshot && this.lastSnapshotFingerprint === fingerprint) {
+        this.lastSnapshotTime = Date.now()
+        return this.lastSnapshot
+      }
+
       this.lastSnapshot = snapshot
       this.lastSnapshotTime = Date.now()
+      this.lastSnapshotFingerprint = fingerprint
       return snapshot
     })()
 
@@ -659,9 +672,15 @@ export class LauncherService {
     )
 
     ;(async () => {
+      let backoffMs = 1000
+      const MAX_BACKOFF_MS = 30_000
       while (!signal.aborted) {
+        const attempt = new AbortController()
+        const onAbort = () => attempt.abort()
+        signal.addEventListener("abort", onAbort, { once: true })
         try {
-          const response = await client.global.event({ signal })
+          const response = await client.global.event({ signal: attempt.signal })
+          backoffMs = 1000
           try {
             for await (const event of response.stream) {
               if (signal.aborted) break
@@ -676,7 +695,11 @@ export class LauncherService {
           }
         } catch {
           if (signal.aborted) break
-          await sleep(1000)
+          await sleep(backoffMs)
+          backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS)
+        } finally {
+          signal.removeEventListener("abort", onAbort)
+          attempt.abort()
         }
       }
     })().catch(() => {})

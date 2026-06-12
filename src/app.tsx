@@ -179,15 +179,16 @@ function useNowTick() {
   return value
 }
 
-function useFrame(intervalMs: number) {
+function useFrame(intervalMs: number, active: boolean) {
   const [value, setValue] = useState(0)
   useEffect(() => {
+    if (!active) return
     const timer = setInterval(() => {
       setValue((current) => current + 1)
     }, intervalMs)
     return () => clearInterval(timer)
-  }, [intervalMs])
-  return value
+  }, [intervalMs, active])
+  return active ? value : 0
 }
 
 function useTerminalSize() {
@@ -428,9 +429,13 @@ export function App({
   const mousePressTargetRef = useRef<MousePressTarget | undefined>(undefined)
   const scrollIndexRef = useRef(0)
   const { width, height } = useTerminalSize()
+  const usableHeight = height - 1
   const now = useNowTick()
-  const animFrame = useFrame(250)
-  const slowFrame = useFrame(800)
+  const hasWorkingSessions = snapshot?.directories.some((record) => record.sessions.some((session) => sessionIsWorking(session.status))) ?? false
+  const recentlyActive = Date.now() - lastInteractionAtRef.current < 45_000
+  const animationsActive = hasWorkingSessions || Boolean(busy) || mode === "search" || recentlyActive
+  const animFrame = useFrame(250, animationsActive)
+  const slowFrame = Math.floor(animFrame / 3)
   const compactLayout = width < 38 || height < 28
   const panelGap = compactLayout ? 0 : 1
   const showBanner = height >= 12
@@ -518,18 +523,22 @@ export function App({
         }
         setExpanded((current) => {
           const nextDirSet = new Set(next.directories.map((d) => d.directory))
+          let changed = false
           const updated: Record<string, boolean> = {}
           for (const dir of Object.keys(current)) {
             if (nextDirSet.has(dir)) {
               updated[dir] = current[dir]
+            } else {
+              changed = true
             }
           }
           for (const [index, record] of next.directories.entries()) {
             if (!(record.directory in updated)) {
               updated[record.directory] = record.pinned || index < 6
+              changed = true
             }
           }
-          return updated
+          return changed ? updated : current
         })
         setSelectedKey((current) => {
           if (preferredSelectedKey && snapshotHasKey(next, preferredSelectedKey)) return preferredSelectedKey
@@ -658,18 +667,23 @@ export function App({
 
   useEffect(() => {
     let cancelled = false
-    void service
-      .isMouseModeEnabled()
-      .then((enabled) => {
-        if (!cancelled) {
-          setMouseEnabled(enabled)
-        }
-      })
-      .catch(() => {})
+    const poll = () => {
+      void service
+        .isMouseModeEnabled()
+        .then((enabled) => {
+          if (!cancelled) {
+            setMouseEnabled(enabled)
+          }
+        })
+        .catch(() => {})
+    }
+    poll()
+    const timer = setInterval(poll, 60_000)
     return () => {
       cancelled = true
+      clearInterval(timer)
     }
-  }, [service, snapshot?.loadedAt])
+  }, [service])
 
   useEffect(() => {
     if (!stdout) return
@@ -1283,8 +1297,6 @@ export function App({
   const directoryCount = snapshot?.directories.length ?? 0
   const sessionCount = snapshot?.directories.reduce((count, record) => count + record.sessions.length, 0) ?? 0
   const activeCount = snapshot?.activeSessions.length ?? 0
-  const hasWorkingSessions = snapshot?.directories.some((record) => record.sessions.some((session) => sessionIsWorking(session.status))) ?? false
-  const recentlyActive = Date.now() - lastInteractionAtRef.current < 45_000
 
   const detail = useMemo(() => {
     if (!selectedRow) return "No project selected"
@@ -1495,7 +1507,7 @@ export function App({
     (showToolsPanel ? 3 + toolsLines.length + panelGap : 0) +
     (mode !== "add-project" && mode !== "rename-session" && mode !== "theme" ? 3 + promptPrimaryLines.length + promptDetail.length + panelGap : 0) +
     projectPanelStaticHeight
-  const visibleRowCount = Math.max(1, height - fixedHeight)
+  const visibleRowCount = Math.max(1, usableHeight - fixedHeight)
   const visibleRows = useMemo(() => windowRows(rows, selectedIndex, visibleRowCount), [rows, selectedIndex, visibleRowCount])
   const firstVisibleIndex = useMemo(() => {
     if (!visibleRows.length) return 0
@@ -1567,7 +1579,7 @@ export function App({
       const ctx = mouseContextRef.current
       if (ctx.mode !== "browse") return false
 
-      let projectRowsStartY = 2
+      let projectRowsStartY = 3
       if (ctx.showBanner) projectRowsStartY += 3
       projectRowsStartY += ctx.panelGap
       projectRowsStartY += 3 + ctx.statusLines.length + ctx.statusMessageLines.length
@@ -1675,7 +1687,7 @@ export function App({
   }, [mouseEnabled, stdin, setRawMode])
 
   return (
-    <Box flexDirection="column" width={width} height={height} paddingX={1} paddingTop={1} backgroundColor={theme.base.background}>
+    <Box flexDirection="column" width={width} height={usableHeight} paddingX={1} paddingTop={1} backgroundColor={theme.base.background}>
       {showBanner ? (
         <Box width={panelOuterWidth} flexDirection="column" borderStyle="single" borderColor={theme.semantic.highlight} paddingX={1}>
           <MascotBanner
