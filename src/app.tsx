@@ -1579,7 +1579,7 @@ export function App({
       const ctx = mouseContextRef.current
       if (ctx.mode !== "browse") return false
 
-      let projectRowsStartY = 3
+      let projectRowsStartY = 2
       if (ctx.showBanner) projectRowsStartY += 3
       projectRowsStartY += ctx.panelGap
       projectRowsStartY += 3 + ctx.statusLines.length + ctx.statusMessageLines.length
