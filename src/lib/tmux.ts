@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { fileURLToPath } from "node:url"
 import { MAX_BACKGROUND_SESSIONS } from "./constants.js"
 import type { ActiveSessionRecord } from "./types.js"
 import { sessionWindowTitle, tmuxWindowName } from "./util.js"
@@ -16,6 +17,26 @@ const PREVIEW_SESSION_OPTION = "@opencode_preview_session_id"
 const PREVIEW_DIRECTORY_OPTION = "@opencode_preview_directory"
 const PREVIEW_TITLE_OPTION = "@opencode_preview_title"
 const PREVIEW_PANE_OPTION = "@opencode_preview_pane_id"
+const SIDEBAR_PANE_OPTION = "@opencode_sidebar_pane_id"
+const SIDEBAR_RIGHT_PANE_OPTION = "@opencode_sidebar_right_pane_id"
+const SIDEBAR_COLLAPSED_OPTION = "@opencode_sidebar_collapsed"
+const SIDEBAR_EXPANDED_WIDTH_OPTION = "@opencode_sidebar_expanded_width"
+const PREVIOUS_TAB_BINDING_OPTION = "@opencode_sidebar_previous_tab_binding"
+const SIDEBAR_RESIZE_HOOK = "window-resized[59137]"
+export const SIDEBAR_TOGGLE_SHORTCUT = "Ctrl-b Tab"
+export const COLLAPSED_SIDEBAR_WIDTH = 5
+export const EXPANDED_SIDEBAR_WIDTH = 52
+
+export function sidebarWidths(windowWidth: number, preferredWidth = EXPANDED_SIDEBAR_WIDTH) {
+  const available = Math.max(2, Math.floor(windowWidth) - 1)
+  const minimumRight = Math.min(44, Math.max(1, Math.floor(available * 0.55)))
+  const expanded = Math.max(1, Math.min(Math.floor(preferredWidth), available - minimumRight))
+  return { expanded, collapsed: Math.min(COLLAPSED_SIDEBAR_WIDTH, Math.max(1, Math.floor(expanded / 2))) }
+}
+
+function quoteShell(value: string) {
+  return `'${value.replace(/'/g, `'"'"'`)}'`
+}
 
 async function runTmux(args: string[]) {
   const { stdout } = await execFileAsync("tmux", args, {
@@ -47,7 +68,7 @@ export async function getCurrentPaneID() {
 
 export async function getSessionName() {
   if (cachedSessionName) return cachedSessionName
-  cachedSessionName = await runTmux(["display-message", "-p", "#{session_name}"])
+  cachedSessionName = await runTmux(["display-message", "-p", "-t", await getCurrentPaneID(), "#{session_name}"])
   return cachedSessionName
 }
 
@@ -74,11 +95,17 @@ export async function resetCurrentPaneBackground() {
 
 export async function listActiveSessionWindows(): Promise<ActiveSessionRecord[]> {
   const session = await getSessionName()
+  return listSessionPanes(["-s", "-t", session])
+}
+
+export async function listAllActiveSessionWindows(): Promise<ActiveSessionRecord[]> {
+  return listSessionPanes(["-a"])
+}
+
+async function listSessionPanes(scope: string[]): Promise<ActiveSessionRecord[]> {
   const output = await runTmux([
     "list-panes",
-    "-a",
-    "-t",
-    session,
+    ...scope,
     "-F",
       `#{pane_id}\t#{window_id}\t#{window_name}\t#{window_active}\t#{${SESSION_OPTION}}\t#{${DIRECTORY_OPTION}}\t#{${TITLE_OPTION}}\t#{${OWNER_OPTION}}`,
     ])
@@ -264,7 +291,7 @@ export async function killSessionWindowBySessionID(sessionID: string) {
 }
 
 export async function getCurrentWindowID() {
-  return runTmux(["display-message", "-p", "#{window_id}"])
+  return runTmux(["display-message", "-p", "-t", await getCurrentPaneID(), "#{window_id}"])
 }
 
 export async function killWindow(windowID: string) {
@@ -380,11 +407,8 @@ export async function getRightPaneID(selectorPaneID: string) {
 
 export async function splitRightPane(selectorPaneID: string, cwd: string) {
   const totalWidth = await getPaneWidth(selectorPaneID)
-  const idealSidebarWidth = 52
-  const minimumSidebarWidth = 36
-  const minimumRightWidth = 44
-  const sidebarWidth = Math.max(minimumSidebarWidth, Math.min(idealSidebarWidth, totalWidth - minimumRightWidth))
-  const rightWidth = Math.max(1, totalWidth - sidebarWidth)
+  const sidebarWidth = sidebarWidths(totalWidth).expanded
+  const rightWidth = Math.max(1, totalWidth - sidebarWidth - 1)
 
   const paneID = await runTmux([
     "split-window",
@@ -430,11 +454,90 @@ export async function getPaneWindowID(paneID: string) {
 }
 
 export async function bindToggleKeys(selectorPaneID: string) {
+  await bindSidebarToggleKey(selectorPaneID)
   const rightPaneID = await getRightPaneID(selectorPaneID)
   if (!rightPaneID) return
+  await runTmux(["set-option", "-w", "-t", selectorPaneID, SIDEBAR_RIGHT_PANE_OPTION, rightPaneID])
   const session = await getSessionName()
   await runTmux(["bind-key", "-n", "M-]", "select-pane", "-t", rightPaneID])
   await runTmux(["bind-key", "-n", "M-b", "select-window", "-t", `${session}:0`])
+}
+
+export async function bindSidebarToggleKey(selectorPaneID?: string) {
+  selectorPaneID ??= await getCurrentPaneID()
+  await runTmux(["set-option", "-w", "-t", selectorPaneID, SIDEBAR_PANE_OPTION, selectorPaneID])
+  const sidebar = `#{${SIDEBAR_PANE_OPTION}}`
+  const extension = import.meta.url.endsWith(".ts") ? "ts" : "js"
+  const controller = fileURLToPath(new URL(`../sidebar-layout.${extension}`, import.meta.url))
+  const command = `${quoteShell(process.execPath)} ${quoteShell(controller)} ${sidebar}`
+  const existing = await runTmux(["list-keys", "-T", "prefix", "Tab"]).catch(() => "")
+  let fallback = existing.replace(/^bind-key\s+-T\s+prefix\s+Tab\s+/, "")
+  if (fallback.includes(SIDEBAR_PANE_OPTION)) {
+    fallback = await runTmux(["show-options", "-gv", PREVIOUS_TAB_BINDING_OPTION]).catch(() => "")
+  } else {
+    await runTmux(["set-option", "-g", PREVIOUS_TAB_BINDING_OPTION, fallback])
+  }
+  await runTmux([
+    "bind-key", "-T", "prefix", "Tab", "if-shell", "-F", sidebar,
+    `run-shell ${JSON.stringify(command)}`, fallback,
+  ])
+  await runTmux(["set-hook", "-w", "-t", selectorPaneID, SIDEBAR_RESIZE_HOOK, `run-shell -b ${JSON.stringify(`${command} --reconcile`)}`])
+  // Retire only this app's old Meta bindings; keep user-defined bindings intact.
+  const rootBindings = await runTmux(["list-keys", "-T", "root"])
+  for (const key of ["M-l", "M-\\"]) {
+    const listedKey = key.replace(/\\/g, "\\\\")
+    const binding = rootBindings.split("\n").find((line) => line.trim().split(/\s+/)[3] === listedKey)
+    if (binding?.includes(SIDEBAR_PANE_OPTION)) await runTmux(["unbind-key", "-T", "root", key])
+  }
+}
+
+export async function getSidebarLayoutState(selectorPaneID?: string) {
+  selectorPaneID ??= await getCurrentPaneID()
+  const output = await runTmux(["display-message", "-p", "-t", selectorPaneID,
+    `#{${SIDEBAR_PANE_OPTION}}\t#{${SIDEBAR_COLLAPSED_OPTION}}\t#{prefix}\t#{window_panes}`])
+  const [owner, collapsed, prefix, panes] = output.split("\t")
+  const prefixLabel = (prefix || "C-b").replace(/^C-/, "Ctrl-").replace(/^M-/, "Alt-")
+  return { registered: owner === selectorPaneID, collapsed: collapsed === "1" && Number(panes) > 1, shortcut: `${prefixLabel} Tab` }
+}
+
+export async function reconcileSidebarLayout(selectorPaneID?: string) {
+  selectorPaneID ??= await getCurrentPaneID()
+  const state = await getSidebarLayoutState(selectorPaneID)
+  if (!state.registered) return
+  const rightPaneID = await getRightPaneID(selectorPaneID)
+  if (!rightPaneID) return
+  const savedWidth = Number(await runTmux(["show-options", "-wv", "-t", selectorPaneID, SIDEBAR_EXPANDED_WIDTH_OPTION]).catch(() => ""))
+  const windowWidth = Number(await runTmux(["display-message", "-p", "-t", selectorPaneID, "#{window_width}"]))
+  const widths = sidebarWidths(windowWidth, savedWidth || await getPaneWidth(selectorPaneID))
+  const desired = state.collapsed ? widths.collapsed : widths.expanded
+  if (await getPaneWidth(selectorPaneID) !== desired) await runTmux(["resize-pane", "-t", selectorPaneID, "-x", String(desired)])
+}
+
+export async function toggleSidebarLayout(selectorPaneID?: string) {
+  selectorPaneID ??= await getCurrentPaneID()
+  const state = await getSidebarLayoutState(selectorPaneID)
+  if (!state.registered) return false
+  const rightPaneID = await getRightPaneID(selectorPaneID)
+  if (!rightPaneID) {
+    await runTmux(["display-message", "-t", selectorPaneID, "Open a session before collapsing the sidebar"])
+    return false
+  }
+  const zoomed = await runTmux(["display-message", "-p", "-t", selectorPaneID, "#{window_zoomed_flag}"])
+  if (zoomed === "1") await runTmux(["resize-pane", "-Z", "-t", selectorPaneID])
+  if (!state.collapsed) await runTmux(["set-option", "-w", "-t", selectorPaneID, SIDEBAR_EXPANDED_WIDTH_OPTION, String(await getPaneWidth(selectorPaneID))])
+  await runTmux(["set-option", "-w", "-t", selectorPaneID, SIDEBAR_COLLAPSED_OPTION, state.collapsed ? "0" : "1"])
+  await reconcileSidebarLayout(selectorPaneID)
+  await selectPane(state.collapsed ? selectorPaneID : rightPaneID)
+  return true
+}
+
+export async function clearSidebarLayout() {
+  const selectorPaneID = await getCurrentPaneID()
+  await runTmux(["set-option", "-uw", "-t", selectorPaneID, SIDEBAR_PANE_OPTION])
+  await runTmux(["set-option", "-uw", "-t", selectorPaneID, SIDEBAR_RIGHT_PANE_OPTION])
+  await runTmux(["set-option", "-uw", "-t", selectorPaneID, SIDEBAR_COLLAPSED_OPTION])
+  await runTmux(["set-option", "-uw", "-t", selectorPaneID, SIDEBAR_EXPANDED_WIDTH_OPTION])
+  await runTmux(["set-hook", "-uw", "-t", selectorPaneID, SIDEBAR_RESIZE_HOOK])
 }
 
 export async function ensureTmuxLayout(cwd: string) {
@@ -444,6 +547,7 @@ export async function ensureTmuxLayout(cwd: string) {
     rightPaneID = await splitRightPane(selectorPaneID, cwd)
   }
   await bindToggleKeys(selectorPaneID)
+  await reconcileSidebarLayout(selectorPaneID)
   return {
     selectorPaneID,
     rightPaneID,
@@ -470,6 +574,7 @@ export async function swapPreviewWithSessionPane(input: {
   await runTmux(["swap-pane", "-d", "-s", input.sessionPaneID, "-t", input.previewPaneID])
 
   cachedRightPaneID = input.sessionPaneID
+  await runTmux(["set-option", "-w", "-t", await getCurrentPaneID(), SIDEBAR_RIGHT_PANE_OPTION, input.sessionPaneID])
 
   await setPreviewSession({
     ...input.nextSession,

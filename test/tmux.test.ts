@@ -1,5 +1,22 @@
 import { describe, expect, test } from "bun:test"
-import { trimBackgroundSessions } from "../src/lib/tmux.js"
+import { sidebarWidths, trimBackgroundSessions } from "../src/lib/tmux.js"
+
+describe("sidebarWidths", () => {
+  test("uses a visible rail and honors a custom expanded width", () => {
+    expect(sidebarWidths(140)).toEqual({ expanded: 52, collapsed: 5 })
+    expect(sidebarWidths(140, 64)).toEqual({ expanded: 64, collapsed: 5 })
+  })
+  test("fits small terminals without consuming the OpenCode pane", () => {
+    expect(sidebarWidths(80)).toEqual({ expanded: 36, collapsed: 5 })
+    expect(sidebarWidths(35)).toEqual({ expanded: 16, collapsed: 5 })
+    for (const width of [10, 25, 35, 80, 140]) {
+      const sizes = sidebarWidths(width, 100)
+      expect(sizes.collapsed).toBeGreaterThan(0)
+      expect(sizes.collapsed).toBeLessThan(sizes.expanded)
+      expect(sizes.expanded).toBeLessThan(width - 1)
+    }
+  })
+})
 
 describe("trimBackgroundSessions", () => {
   test("drops oldest inactive windows beyond the retention cap", () => {

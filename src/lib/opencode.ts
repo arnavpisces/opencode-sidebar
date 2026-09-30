@@ -16,17 +16,20 @@ import {
 } from "./constants.js"
 import { buildSnapshot } from "./model.js"
 import { SoundNotifier } from "./notifications.js"
-import { loadState, saveState, updateState } from "./state.js"
+import { loadState, updateState } from "./state.js"
 import { getThemeScheme } from "./themes.js"
+import { createServerFetch, SERVER_HEALTH_TIMEOUT_MS } from "./server-fetch.js"
 import type { DirectoryRecord, OpenResult, ProjectRecord, SessionRecord, SessionRuntimeStatus, Snapshot } from "./types.js"
 import { assertDirectoryExists, directoryLabel, directorySubtitle, normalizeDirectory, sleep } from "./util.js"
 import {
+  clearSidebarLayout,
   describeTerminalBackend,
   getPreviewSessionID,
   getPreviewSessionMeta,
   isTmuxMouseModeEnabled,
   killSessionWindow,
   listActiveSessions,
+  listAllActiveSessions,
   listOwnedSessions,
   openSessionWithPreferredTerminal,
   restartSession,
@@ -58,7 +61,9 @@ type ServerPortState = {
 
 async function isHealthy(port: number) {
   try {
-    const response = await fetch(`http://${SERVER_HOST}:${port}/global/health`)
+    const response = await fetch(`http://${SERVER_HOST}:${port}/global/health`, {
+      signal: AbortSignal.timeout(SERVER_HEALTH_TIMEOUT_MS),
+    })
     if (!response.ok) return false
     const json = (await response.json()) as { healthy?: boolean }
     return json.healthy === true
@@ -159,7 +164,7 @@ async function ensureServerPort(): Promise<ServerPortState> {
   }
 
   if (port !== state.serverPort) {
-    await saveState({ ...state, serverPort: port })
+    await updateState((current) => ({ ...current, serverPort: port }))
   }
 
   const serverPID = await startDetachedServer(port)
@@ -313,7 +318,6 @@ export class LauncherService {
   private lastSnapshotFingerprint?: string
   private cachedState?: { state: Awaited<ReturnType<typeof loadState>>; at: number }
   private static readonly STATE_CACHE_MS = 10_000
-  private readonly launchedSessionIDs = new Set<string>()
   private readonly notifier = new SoundNotifier()
   private static readonly MIN_REFRESH_MS = 2000
 
@@ -341,7 +345,7 @@ export class LauncherService {
 
       const { port, serverPID } = await ensureServerPort()
       const baseUrl = `http://${SERVER_HOST}:${port}`
-      const client = createOpencodeClient({ baseUrl })
+      const client = createOpencodeClient({ baseUrl, fetch: createServerFetch(), throwOnError: true })
 
       this.client = client
       this.baseUrl = baseUrl
@@ -369,9 +373,17 @@ export class LauncherService {
     if (this.cachedState && now - this.cachedState.at < LauncherService.STATE_CACHE_MS) {
       return this.cachedState.state
     }
+    const generation = this.snapshotGeneration
     const state = await loadState()
-    this.cachedState = { state, at: now }
+    if (generation === this.snapshotGeneration) this.cachedState = { state, at: now }
     return state
+  }
+
+  private snapshotGeneration = 0
+
+  private invalidateSnapshot() {
+    this.snapshotGeneration += 1
+    this.lastSnapshotTime = Number.NEGATIVE_INFINITY
   }
 
   async getSnapshot(): Promise<Snapshot> {
@@ -381,11 +393,12 @@ export class LauncherService {
     }
 
     if (this.snapshotPromise) {
-      return this.snapshotPromise
+      await this.snapshotPromise
+      return this.getSnapshot()
     }
 
+    const generation = this.snapshotGeneration
     this.snapshotPromise = (async () => {
-      this.lastSnapshot = undefined
       const [{ client, baseUrl, port }, state, activeSessions, previewSessionID] = await Promise.all([
         this.ensureReady(),
         this.getCachedState(),
@@ -424,10 +437,12 @@ export class LauncherService {
       })
 
       const fingerprint = JSON.stringify([snapshot.directories, snapshot.activeSessions, snapshot.previewSessionID, snapshot.baseUrl])
-      if (this.lastSnapshot && this.lastSnapshotFingerprint === fingerprint) {
+      if (generation === this.snapshotGeneration && this.lastSnapshot && this.lastSnapshotFingerprint === fingerprint) {
         this.lastSnapshotTime = Date.now()
         return this.lastSnapshot
       }
+
+      if (generation !== this.snapshotGeneration) return snapshot
 
       this.lastSnapshot = snapshot
       this.lastSnapshotTime = Date.now()
@@ -435,11 +450,13 @@ export class LauncherService {
       return snapshot
     })()
 
+    let snapshot: Snapshot
     try {
-      return await this.snapshotPromise
+      snapshot = await this.snapshotPromise
     } finally {
       this.snapshotPromise = undefined
     }
+    return generation === this.snapshotGeneration ? snapshot : this.getSnapshot()
   }
 
   async addProjectDirectory(rawDirectory: string) {
@@ -454,11 +471,13 @@ export class LauncherService {
     }
     await updateState((state) => ({
       ...state,
+      hiddenDirectories: state.hiddenDirectories.filter((hidden) => hidden !== directory),
       pinnedDirectories: state.pinnedDirectories.includes(directory)
         ? state.pinnedDirectories
         : [...state.pinnedDirectories, directory],
     }))
     this.cachedState = undefined
+    this.invalidateSnapshot()
     return directory
   }
 
@@ -504,6 +523,7 @@ export class LauncherService {
       pinnedDirectories: state.pinnedDirectories.filter((item) => item !== directory),
     }))
     this.cachedState = undefined
+    this.invalidateSnapshot()
   }
 
   async hideDirectory(directory: string) {
@@ -515,6 +535,7 @@ export class LauncherService {
         : [...state.hiddenDirectories, directory],
     }))
     this.cachedState = undefined
+    this.invalidateSnapshot()
   }
 
   async getThemeID() {
@@ -527,6 +548,7 @@ export class LauncherService {
       themeID,
     }))
     this.cachedState = undefined
+    this.invalidateSnapshot()
     return themeID
   }
 
@@ -539,7 +561,7 @@ export class LauncherService {
       baseUrl,
       background: getThemeScheme(state.themeID).base.background,
     })
-    this.launchedSessionIDs.add(session.id)
+    this.invalidateSnapshot()
     return result
   }
 
@@ -549,6 +571,7 @@ export class LauncherService {
     if (!result.data) {
       throw new Error("Failed to create a new session")
     }
+    this.invalidateSnapshot()
     const session = result.data as SessionRecord
     const openResult = await openSessionWithPreferredTerminal({
       sessionID: session.id,
@@ -557,7 +580,7 @@ export class LauncherService {
       baseUrl,
       background: getThemeScheme(state.themeID).base.background,
     })
-    this.launchedSessionIDs.add(session.id)
+    this.invalidateSnapshot()
     return openResult
   }
 
@@ -574,7 +597,7 @@ export class LauncherService {
       sessionID,
       directory,
     })
-    this.launchedSessionIDs.delete(sessionID)
+    this.invalidateSnapshot()
   }
 
   async renameSession(directory: string, sessionID: string, title: string) {
@@ -588,15 +611,14 @@ export class LauncherService {
       directory,
       title: nextTitle,
     })
+    this.invalidateSnapshot()
     await retitleSessionWindow(sessionID, directory, nextTitle).catch(() => false)
     return nextTitle
   }
 
   async killSession(sessionID: string) {
     const killed = await killSessionWindow(sessionID)
-    if (killed) {
-      this.launchedSessionIDs.delete(sessionID)
-    }
+    if (killed) this.invalidateSnapshot()
     return killed
   }
 
@@ -621,13 +643,14 @@ export class LauncherService {
   }
 
   async shutdown() {
+    await clearSidebarLayout().catch(() => {})
     const [ownedSessions, activeSessionsBeforeShutdown] = await Promise.all([
       listOwnedSessions().catch(() => []),
-      listActiveSessions().catch(() => []),
+      listAllActiveSessions().catch(() => []),
     ])
     const ownedSessionIDs = [...new Set(ownedSessions.map((session) => session.sessionID))]
-    const ownedSessionIDSet = new Set(ownedSessionIDs)
-    const hasUnownedActiveSessions = activeSessionsBeforeShutdown.some((session) => !ownedSessionIDSet.has(session.sessionID))
+    const ownedPaneIDs = new Set(ownedSessions.map((session) => session.paneID))
+    const hasUnownedActiveSessions = activeSessionsBeforeShutdown.some((session) => !ownedPaneIDs.has(session.paneID))
     const results = [] as boolean[]
     for (const sessionID of ownedSessionIDs) {
       results.push(await killSessionWindow(sessionID).catch(() => false))
@@ -642,7 +665,6 @@ export class LauncherService {
       await sleep(100)
     }
 
-    this.launchedSessionIDs.clear()
     if (this.startedServerPID && this.port && !hasUnownedActiveSessions) {
       await stopDetachedServer(this.startedServerPID, this.port).catch(() => false)
       this.startedServerPID = undefined
@@ -654,7 +676,6 @@ export class LauncherService {
   }
 
   async subscribe(signal: AbortSignal, onInvalidate: () => void) {
-    const { client } = await this.ensureReady()
     let timer: ReturnType<typeof setTimeout> | undefined
     const invalidate = () => {
       if (timer) clearTimeout(timer)
@@ -679,6 +700,8 @@ export class LauncherService {
         const onAbort = () => attempt.abort()
         signal.addEventListener("abort", onAbort, { once: true })
         try {
+          const { client } = await this.ensureReady()
+          if (signal.aborted) break
           const response = await client.global.event({ signal: attempt.signal })
           backoffMs = 1000
           try {

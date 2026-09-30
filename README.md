@@ -68,6 +68,9 @@ opencode-sidebar
 - `e`: rename session
 - `d`: delete session with confirmation
 - `k`: kill a running session window without deleting history
+- `h`: hide the selected project folder from the list
+- `Ctrl-b` then `Tab`: collapse or expand the sidebar from either pane after opening a session. If you use a different tmux prefix, use that prefix instead of `Ctrl-b`.
+- `Tab` while browsing the sidebar: collapse it. In the collapsed sidebar, `Tab`, `Enter`, or clicking anywhere on the icon rail expands it again.
 - `/`: search
 - `a`: add a project folder
 - `Space`: expand or collapse a project
@@ -75,6 +78,8 @@ opencode-sidebar
 - `q`: quit
 
 ### Status Symbols
+
+The sidebar collapses to a five-column icon rail (plus the tmux divider): `›` expands it, `≡` indicates sessions, and the status dot is `●` while running or `○` while idle. A connection error shows `!`. Click anywhere on the rail, including its empty space, to expand. Labels, counts, and shortcut hints stay in the expanded view. Collapsing gives focus and extra space to OpenCode; expanding restores your previous sidebar width and focus. Both panes and their sessions keep running. The width adapts to small terminals, and the collapsed state survives session switching. Search text, selection, and open dialogs are preserved when toggling with the tmux shortcut. Option/Alt configuration is not needed.
 
 - `▶` means currently previewed
 - `◆` means active in background

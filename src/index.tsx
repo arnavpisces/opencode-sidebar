@@ -2,14 +2,14 @@
 import fs from "node:fs"
 import path from "node:path"
 import v8 from "node:v8"
-import React from "react"
-import { render } from "ink"
+import { renderTerminalApp } from "./lib/render-terminal.js"
 import { App } from "./app.js"
 import { LauncherService } from "./lib/opencode.js"
 import { APP_DIR } from "./lib/constants.js"
 import { loadStateSync } from "./lib/state.js"
 import { writeTerminalBackground, resetTerminalBackground } from "./lib/terminal-theme.js"
 import { getThemeScheme } from "./lib/themes.js"
+import { bindSidebarToggleKey } from "./lib/tmux.js"
 
 const service = new LauncherService()
 const initialThemeID = loadStateSync().themeID
@@ -80,9 +80,10 @@ if (process.env.OPENCODE_SIDEBAR_MEMLOG === "1") {
   process.on("SIGUSR2", takeHeap)
 }
 
-const instance = render(renderApp(), {
+await bindSidebarToggleKey()
+
+renderTerminalApp(renderApp(), {
   exitOnCtrlC: false,
-  incrementalRendering: true,
   kittyKeyboard: {
     mode: "auto",
   },

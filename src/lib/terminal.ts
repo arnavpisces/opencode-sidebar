@@ -1,5 +1,6 @@
 import type { ActiveSessionRecord, OpenResult, TerminalBackendName } from "./types.js"
 export { getPreviewSessionMeta } from "./tmux.js"
+export { clearSidebarLayout } from "./tmux.js"
 import {
   ensureTmuxLayout,
   findAnyWindowBySessionID,
@@ -12,6 +13,7 @@ import {
   killSessionWindowBySessionID,
   listOwnedSessionWindows,
   listActiveSessionWindows,
+  listAllActiveSessionWindows,
   parkPreviewSession,
   pruneBackgroundSessions,
   renameSessionWindow,
@@ -43,6 +45,10 @@ export function describeTerminalBackend(): TerminalBackendName {
 
 export async function listActiveSessions(): Promise<ActiveSessionRecord[]> {
   return listActiveSessionWindows()
+}
+
+export async function listAllActiveSessions(): Promise<ActiveSessionRecord[]> {
+  return listAllActiveSessionWindows()
 }
 
 export async function hasRunningSessionWindow(sessionID: string) {

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 - 2026-09-30
+
+- Added sidebar collapse and expansion from either pane with the tmux prefix followed by Tab. The collapsed view is a five-column icon rail; clicking anywhere on it restores the previous width and sidebar focus without restarting OpenCode. Selection, search text, dialogs, and collapsed state survive toggles and session recall.
+- Simplified the sidebar layout and contextual hints, added grouped scrollable help, and limited each project's visible session list to five with independent keyboard and mouse scrolling and overflow indicators.
+- Added Abyssal Tide, Amber Parchment, Plum Dusk, and Glacier Mist themes, improved semantic color contrast, and painted frame edges with the selected theme's background.
+- Replaced relative cursor repaints with synchronized terminal row updates to prevent duplicated headings, stale content, wrapping artifacts, and flicker during refreshes, animations, theme previews, and pane resizing.
+- Added deadlines for finite OpenCode requests and response bodies, clearer HTTP and timeout errors, and event-stream subscription retries after startup failures.
+- Fixed snapshot reuse and invalidation after session and project changes, including re-adding hidden folders and ignoring stale in-flight state reads. Serialized state updates and validated persisted values to prevent lost settings and shared mutable defaults.
+- Scoped tmux operations to the sidebar's own session and preserved shared OpenCode servers when another pane uses them. Added startup shortcut registration, resize handling, and shortcut target cleanup.
+- Expanded regression coverage for terminal rendering, theme colors, startup recovery, snapshot caching, persisted state, project scrolling, sidebar geometry and controls, session recall, and tmux shutdown.
+
 ## 0.3.5 - 2026-06-13
 
 - Fixed stale text persisting on screen: restored full-height rendering so Ink overwrites every terminal line each frame, preventing leftover content when layout shrinks.

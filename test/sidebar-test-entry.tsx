@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 import fs from "node:fs/promises"
 import React from "react"
-import { render } from "ink"
+import { renderTerminalApp } from "../src/lib/render-terminal.js"
 import { App } from "../src/app.js"
 import { LauncherService } from "../src/lib/opencode.js"
+import { bindSidebarToggleKey } from "../src/lib/tmux.js"
 import { sleep } from "../src/lib/util.js"
 
 const controlFile = process.env.OPENCODE_SIDEBAR_TEST_CONTROL
@@ -89,7 +90,9 @@ process.on("unhandledRejection", startFatalExit)
 
 void startTestControlChannel(controlFile, testControlAbort.signal).catch(() => {})
 
-const instance = render(renderApp(), {
+await bindSidebarToggleKey()
+
+const instance = renderTerminalApp(renderApp(), {
   exitOnCtrlC: false,
   kittyKeyboard: {
     mode: "auto",

@@ -5,11 +5,13 @@ import { DEFAULT_THEME_ID } from "./themes.js"
 import type { PersistedState } from "./types.js"
 import { distinct } from "./util.js"
 
-const DEFAULT_STATE: PersistedState = {
-  serverPort: DEFAULT_PORT,
-  pinnedDirectories: [],
-  hiddenDirectories: [],
-  themeID: DEFAULT_THEME_ID,
+function defaultState(): PersistedState {
+  return {
+    serverPort: DEFAULT_PORT,
+    pinnedDirectories: [],
+    hiddenDirectories: [],
+    themeID: DEFAULT_THEME_ID,
+  }
 }
 
 async function ensureAppDir() {
@@ -26,11 +28,12 @@ function ensureAppDirSync() {
   }
 }
 
-function normalizeState(parsed: Partial<PersistedState>): PersistedState {
+function normalizeState(value: unknown): PersistedState {
+  const parsed = value && typeof value === "object" ? value as Partial<PersistedState> : {}
   return {
-    serverPort: parsed.serverPort && Number.isInteger(parsed.serverPort) ? parsed.serverPort : DEFAULT_PORT,
-    pinnedDirectories: distinct((parsed.pinnedDirectories ?? []).filter((item): item is string => typeof item === "string")),
-    hiddenDirectories: distinct((parsed.hiddenDirectories ?? []).filter((item): item is string => typeof item === "string")),
+    serverPort: typeof parsed.serverPort === "number" && Number.isInteger(parsed.serverPort) && parsed.serverPort > 0 && parsed.serverPort <= 65535 ? parsed.serverPort : DEFAULT_PORT,
+    pinnedDirectories: distinct((Array.isArray(parsed.pinnedDirectories) ? parsed.pinnedDirectories : []).filter((item): item is string => typeof item === "string")),
+    hiddenDirectories: distinct((Array.isArray(parsed.hiddenDirectories) ? parsed.hiddenDirectories : []).filter((item): item is string => typeof item === "string")),
     themeID: typeof parsed.themeID === "string" ? parsed.themeID : DEFAULT_THEME_ID,
   }
 }
@@ -41,7 +44,7 @@ export function loadStateSync(): PersistedState {
     const raw = fsSync.readFileSync(STATE_FILE, "utf8")
     return normalizeState(JSON.parse(raw) as Partial<PersistedState>)
   } catch {
-    return { ...DEFAULT_STATE }
+    return defaultState()
   }
 }
 
@@ -51,7 +54,7 @@ export async function loadState(): Promise<PersistedState> {
     const raw = await fs.readFile(STATE_FILE, "utf8")
     return normalizeState(JSON.parse(raw) as Partial<PersistedState>)
   } catch {
-    return { ...DEFAULT_STATE }
+    return defaultState()
   }
 }
 
@@ -70,11 +73,17 @@ export async function saveState(state: PersistedState) {
   await fs.chmod(STATE_FILE, PRIVATE_FILE_MODE).catch(() => {})
 }
 
-export async function updateState(updater: (state: PersistedState) => PersistedState | Promise<PersistedState>) {
-  const current = await loadState()
-  const next = await updater(current)
-  await saveState(next)
-  return next
+let pendingUpdate: Promise<unknown> = Promise.resolve()
+
+export function updateState(updater: (state: PersistedState) => PersistedState | Promise<PersistedState>) {
+  const update = pendingUpdate.then(async () => {
+    const current = await loadState()
+    const next = await updater(current)
+    await saveState(next)
+    return next
+  })
+  pendingUpdate = update.catch(() => {})
+  return update
 }
 
 export async function touchAppDir() {

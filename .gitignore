@@ -7,4 +7,10 @@ test/tmux-cleanup.log
 test/sidebar-sigint-cleanup.log
 test/sidebar-ctrlc-cleanup.log
 test/tmux-flow-debug.log
+test/rendering-captures.json
 test/sidebar-sigint-control-*.txt
+
+# Local reference checkout and scratch/demo source files.
+/opencode/
+/payload.json
+/static/sidebar.mov

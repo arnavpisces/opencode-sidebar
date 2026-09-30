@@ -1,6 +1,6 @@
 {
   "name": "opencode-sidebar",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "tmux sidebar launcher for OpenCode",
   "type": "module",
   "license": "Apache-2.0",
@@ -51,10 +51,11 @@
     "test:tmux:cleanup": "./test/run-tmux-cleanup.sh",
     "test:tmux:flow": "./test/run-tmux-flow.sh",
     "test:tmux:sigint-cleanup": "./test/run-sidebar-sigint-cleanup.sh",
+    "test:tmux:rendering": "npm run build && node test/rendering-tmux.mjs",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm run test && npm run build",
     "verify:release": "npm run verify && npm run verify:tmux",
-    "verify:tmux": "npm run test:tmux:flow && npm run test:tmux:cleanup && npm run test:tmux:sigint-cleanup"
+    "verify:tmux": "npm run test:tmux:flow && npm run test:tmux:cleanup && npm run test:tmux:sigint-cleanup && npm run test:tmux:rendering"
   },
   "dependencies": {
     "@opencode-ai/sdk": "1.3.15",

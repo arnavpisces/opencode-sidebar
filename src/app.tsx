@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Box, Text, useApp, useInput, useStdout, useStdin } from "ink"
+import { projectSessionWindows, scrollProjectWindow, type DisplayRow } from "./lib/sidebar-window.js"
 import { STATUS_MESSAGE_HOLD_MS, WINDOW_POLL_INTERVAL_MS } from "./lib/constants.js"
 import { LauncherService } from "./lib/opencode.js"
+import { getSidebarLayoutState, isTmux, SIDEBAR_TOGGLE_SHORTCUT, toggleSidebarLayout } from "./lib/tmux.js"
 import { resetTerminalBackground, writeTerminalBackground } from "./lib/terminal-theme.js"
 import { DEFAULT_THEME_ID, getThemeScheme, THEMES, type ThemeScheme } from "./lib/themes.js"
 import type { DirectoryRecord, SidebarRow, Snapshot } from "./lib/types.js"
@@ -47,11 +49,6 @@ type AddProjectOption = {
   pinned: boolean
 }
 
-type ThemeOption = {
-  id: string
-  name: string
-}
-
 type MousePressTarget =
   | {
       kind: "toggle"
@@ -63,21 +60,17 @@ type MousePressTarget =
     }
 
 type ModalLineEntry = {
+  palette?: ThemeScheme
   line: string
   color?: TextColor
   backgroundColor?: TextColor
 }
 
-type BorderColor = React.ComponentProps<typeof Box>["borderColor"]
 type TextColor = React.ComponentProps<typeof Text>["color"]
 
 const SPINNER_FRAMES = ["-", "\\", "|", "/"]
 const LIVE_FRAMES = ["o", "O", "0", "O"]
-const SELECT_FRAMES = [">", "}", "]", "}"]
 const ADD_PROJECT_KEY = "action:add-project"
-const HAPPY_BREATHING_FACES = ["(◕ᴥ◕)", "(◕ᴗ◕)"]
-const SUPER_HAPPY_FACE = "(◕‿◕)"
-const SLEEPING_FACE = "(-ᴥ-)"
 const SAD_FACE = "(◕︵◕)"
 const UNWELL_FACE = "(@_@)"
 const RUNNING_FACES = ["(•̀ᴗ•́)", "(ง'̀-'́)ง", "(•̀ㅂ•́)و"]
@@ -120,10 +113,6 @@ function addProjectOptionMatches(option: AddProjectOption, query: string) {
 
 function optionDisplay(option: AddProjectOption) {
   return `${option.directory}${option.pinned ? " [PINNED]" : ""}`
-}
-
-function themeOptionDisplay(option: ThemeOption) {
-  return option.name
 }
 
 const ADD_PROJECT_ROW: SidebarRow = {
@@ -226,6 +215,20 @@ function fitLine(input: string, width: number) {
   return truncate(input, width).padEnd(width, " ")
 }
 
+function packHints(items: string[], width: number) {
+  const lines: string[] = []
+  let line = ""
+  for (const item of items) {
+    const next = line ? `${line} · ${item}` : item
+    if (next.length > width && line) {
+      lines.push(line)
+      line = truncate(item, width)
+    } else line = truncate(next, width)
+  }
+  if (line) lines.push(line)
+  return lines
+}
+
 function dropdownOptionLines(marker: string, label: string, width: number) {
   const gutter = `${marker} `
   const contentWidth = minimumWidth(width - gutter.length)
@@ -242,16 +245,6 @@ function windowRows<T>(rows: T[], selectedIndex: number, limit: number) {
   const before = Math.floor(limit / 2)
   const start = clamp(selectedIndex - before, 0, Math.max(0, rows.length - limit))
   return rows.slice(start, start + limit)
-}
-
-function sectionRule(title: string, width: number) {
-  const prefix = `--[ ${title} ]`
-  if (prefix.length >= width) return truncate(prefix, width)
-  return prefix + "-".repeat(width - prefix.length)
-}
-
-function metricLine(label: string, value: string, width: number) {
-  return truncate(`${label.toUpperCase().padEnd(10)} ${value}`, width)
 }
 
 function sessionJustCompleted(status?: Snapshot["directories"][number]["sessions"][number]["status"]) {
@@ -328,29 +321,12 @@ function mascotTitle(input: {
           ? "On watch"
           : "Sleeping"
 
-  const wideTitle = `:: OPENCODE SIDEBAR :: ${face} ${mood} :: ${input.theme.name}`
-  const compactTitle = `:: OPENCODE SIDEBAR :: ${face}`
-
-  if (input.compact) return compactTitle
-  if (wideTitle.length <= input.width) return wideTitle
-  const mediumTitle = `:: OPENCODE SIDEBAR :: ${face} ${mood}`
-  if (mediumTitle.length <= input.width) return mediumTitle
-  return compactTitle
+  return `OPENCODE SIDEBAR ${face} ${mood}`
 }
 
 function AnimatedSpinner({ active, frame }: { active: boolean; frame: number }) {
   if (!active) return null
   return <Text>{SPINNER_FRAMES[frame % SPINNER_FRAMES.length]}</Text>
-}
-
-function LiveActivityGlyph({ active, frame }: { active: boolean; frame: number }) {
-  if (!active) return null
-  return <Text>{LIVE_FRAMES[frame % LIVE_FRAMES.length]}</Text>
-}
-
-function SelectAnimationGlyph({ selected, frame }: { selected: boolean; frame: number }) {
-  if (!selected) return <Text>[ ]</Text>
-  return <Text>[{SELECT_FRAMES[frame % SELECT_FRAMES.length]}]</Text>
 }
 
 function BlinkingCursor({ frame }: { frame: number }) {
@@ -369,19 +345,39 @@ function MascotBanner(props: {
   frame: number
 }) {
   const title = mascotTitle(props)
-  return <Text color={props.theme.semantic.highlight} bold>{fitLine(title, props.width)}</Text>
+  return <Text color={props.theme.semantic.highlight} bold wrap="truncate-end">{title}</Text>
+}
+
+function KeyHints({ line, theme }: { line: string; theme: ThemeScheme }) {
+  return <Text>{line.split(/(\[[^\]]+\])/g).map((part, index) => <Text key={index} color={part.startsWith("[") ? theme.semantic.info : theme.semantic.muted}>{part}</Text>)}</Text>
+}
+
+// Ink's native border renderer resets backgrounds on edge cells. Paint each
+// frame cell as Text so corners, sides, and interior share the theme background.
+function Frame({ width, theme, children }: { width: number; theme: ThemeScheme; children: React.ReactNode }) {
+  const innerWidth = Math.max(0, width - 2)
+  return <Box width={width} flexDirection="column" backgroundColor={theme.base.background}>
+    <Text color={theme.semantic.border} backgroundColor={theme.base.background}>{`┌${"─".repeat(innerWidth)}┐`}</Text>
+    {React.Children.toArray(children).map((child, index) => <Box key={index} width={width} height={1} backgroundColor={theme.base.background}>
+      <Text color={theme.semantic.border} backgroundColor={theme.base.background}>│</Text>
+      <Box width={innerWidth} flexShrink={0} backgroundColor={theme.base.background}>{child}</Box>
+      <Text color={theme.semantic.border} backgroundColor={theme.base.background}>│</Text>
+    </Box>)}
+    <Text color={theme.semantic.border} backgroundColor={theme.base.background}>{`└${"─".repeat(innerWidth)}┘`}</Text>
+  </Box>
 }
 
 function Panel(props: {
   title: string
   width: number
-  borderColor?: BorderColor
   titleColor?: TextColor
+  ruleColor?: TextColor
   children?: React.ReactNode
 }) {
-  const { title, width, borderColor = "gray", titleColor = "cyanBright", children } = props
+  const { title, width, titleColor = "cyanBright", ruleColor = "gray", children } = props
   return (
-    <Box width={width + 4} flexDirection="column" borderStyle="single" borderColor={borderColor} paddingX={1}>
+    <Box width={width} flexDirection="column">
+      <Text color={ruleColor}>{"─".repeat(width)}</Text>
       <Text color={titleColor} bold>
         {fitLine(title, width)}
       </Text>
@@ -406,10 +402,14 @@ export function App({
   const { stdin, setRawMode } = useStdin()
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [projectOffsets, setProjectOffsets] = useState<Record<string, number>>({})
   const [selectedKey, setSelectedKey] = useState<string>()
   const [mode, setMode] = useState<Mode>("browse")
+  const [showHelp, setShowHelp] = useState(false)
+  const [helpOffset, setHelpOffset] = useState(0)
   const [inputValue, setInputValue] = useState("")
-  const [status, setStatus] = useState("Booting opencode server...")
+  const [status, setStatus] = useState("")
+  const [statusDeadline, setStatusDeadline] = useState(0)
   const [error, setError] = useState<string>()
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string>()
@@ -423,13 +423,18 @@ export function App({
   const [themeID, setThemeID] = useState(initialThemeID)
   const [themeOptionIndex, setThemeOptionIndex] = useState(0)
   const [mouseEnabled, setMouseEnabled] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarShortcut, setSidebarShortcut] = useState(SIDEBAR_TOGGLE_SHORTCUT)
+  const sidebarTogglePending = useRef(false)
   const stickyStatusUntilRef = useRef(0)
+  const backgroundWritesRef = useRef<Promise<void>>(Promise.resolve())
+  const backgroundGenerationRef = useRef(0)
   const lastInteractionAtRef = useRef(Date.now())
   const lastMouseUpRef = useRef<{ key: string; at: number } | undefined>(undefined)
   const mousePressTargetRef = useRef<MousePressTarget | undefined>(undefined)
   const scrollIndexRef = useRef(0)
   const { width, height } = useTerminalSize()
-  const usableHeight = height - 1
+  const viewportHeight = Math.max(1, height)
   const now = useNowTick()
   const hasWorkingSessions = snapshot?.directories.some((record) => record.sessions.some((session) => sessionIsWorking(session.status))) ?? false
   const recentlyActive = Date.now() - lastInteractionAtRef.current < 45_000
@@ -438,14 +443,21 @@ export function App({
   const slowFrame = Math.floor(animFrame / 3)
   const compactLayout = width < 38 || height < 28
   const panelGap = compactLayout ? 0 : 1
-  const showBanner = height >= 12
+  const showBanner = height >= 12 && !(mode === "theme" && height < 20)
   const panelOuterWidth = minimumWidth(width - 2)
-  const panelTextWidth = minimumWidth(panelOuterWidth - 4)
+  const panelTextWidth = panelOuterWidth
   const sectionTextWidth = minimumWidth(width - 2)
   const themeOptions = useMemo(() => THEMES.map((item) => ({ id: item.id, name: item.name })), [])
   const selectedThemeOption = themeOptions[Math.max(0, Math.min(themeOptionIndex, themeOptions.length - 1))]
   const previewThemeID = mode === "theme" ? selectedThemeOption?.id ?? themeID : themeID
   const theme = useMemo(() => getThemeScheme(previewThemeID), [previewThemeID])
+  useEffect(() => {
+    const generation = ++backgroundGenerationRef.current
+    writeTerminalBackground(stdout, theme.base.background)
+    backgroundWritesRef.current = backgroundWritesRef.current.then(async () => {
+      if (generation === backgroundGenerationRef.current) await service.setTerminalBackground(theme.base.background)
+    }).catch(() => {})
+  }, [stdout, service, theme.base.background])
   const rows = useMemo(() => buildRows(snapshot, expanded, mode === "search" ? inputValue : ""), [expanded, inputValue, mode, snapshot])
   const selectedIndex = useMemo(() => {
     if (!rows.length) return 0
@@ -454,6 +466,11 @@ export function App({
     return match >= 0 ? match : 0
   }, [rows, selectedKey])
   const selectedRow = rows[selectedIndex]
+  const projected = useMemo(() => projectSessionWindows(rows, projectOffsets, selectedRow?.key), [rows, projectOffsets, selectedRow?.key])
+  useEffect(() => {
+    if (Object.keys(projected.offsets).length !== Object.keys(projectOffsets).length || Object.keys(projected.offsets).some((directory) => projected.offsets[directory] !== projectOffsets[directory])) setProjectOffsets(projected.offsets)
+  }, [projected.offsets, projectOffsets])
+  useEffect(() => { setProjectOffsets({}) }, [mode === "search" ? inputValue : ""])
   scrollIndexRef.current = selectedIndex
   const previewSession = useMemo(() => findSessionInSnapshot(snapshot, snapshot?.previewSessionID), [snapshot])
   const addProjectSelectedOption = addProjectOptions[Math.max(0, Math.min(addProjectOptionIndex, addProjectOptions.length - 1))]
@@ -461,6 +478,8 @@ export function App({
   const closeApp = useCallback(async () => {
     lastInteractionAtRef.current = Date.now()
     onRequestExit?.()
+    backgroundGenerationRef.current++
+    await backgroundWritesRef.current
     try {
       if (onCleanup) {
         await onCleanup()
@@ -476,8 +495,51 @@ export function App({
   const setTemporaryStatus = useCallback((message: string) => {
     const nextStickyStatusUntil = Date.now() + STATUS_MESSAGE_HOLD_MS
     stickyStatusUntilRef.current = nextStickyStatusUntil
+    setStatusDeadline(nextStickyStatusUntil)
     setStatus(message)
   }, [])
+
+  useEffect(() => {
+    if (!isTmux()) return
+    let stopped = false
+    let reading = false
+    const update = async () => {
+      if (reading) return
+      reading = true
+      try {
+        const layout = await getSidebarLayoutState()
+        if (!stopped) {
+          setSidebarCollapsed(layout.collapsed && layout.registered)
+          setSidebarShortcut(layout.shortcut)
+        }
+      } catch { /* The tmux pane may disappear during shutdown. */ }
+      finally { reading = false }
+    }
+    void update()
+    const onResize = () => { void update() }
+    stdout.on("resize", onResize)
+    const timer = setInterval(onResize, 250)
+    return () => { stopped = true; clearInterval(timer); stdout.off("resize", onResize) }
+  }, [stdout])
+
+  const toggleSidebar = useCallback(async () => {
+    if (sidebarTogglePending.current) return
+    sidebarTogglePending.current = true
+    try {
+      if (await toggleSidebarLayout()) {
+        const layout = await getSidebarLayoutState()
+        setSidebarCollapsed(layout.collapsed)
+      } else setTemporaryStatus("Open a session before collapsing the sidebar")
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally { sidebarTogglePending.current = false }
+  }, [setTemporaryStatus])
+
+  useEffect(() => {
+    if (!status) return
+    const timer = setTimeout(() => setStatus(""), Math.max(0, statusDeadline - Date.now()))
+    return () => clearTimeout(timer)
+  }, [status, statusDeadline])
 
   const beginAddProject = useCallback(() => {
     lastInteractionAtRef.current = Date.now()
@@ -491,8 +553,7 @@ export function App({
     lastInteractionAtRef.current = Date.now()
     setMode("theme")
     setThemeOptionIndex(Math.max(0, themeOptions.findIndex((option) => option.id === themeID)))
-    setTemporaryStatus("Choose a sidebar theme")
-  }, [setTemporaryStatus, themeID, themeOptions])
+  }, [themeID, themeOptions])
 
   const beginRenameSession = useCallback(() => {
     lastInteractionAtRef.current = Date.now()
@@ -519,7 +580,7 @@ export function App({
         const next = await service.getSnapshot()
         setSnapshot(next)
         if (Date.now() > stickyStatusUntilRef.current) {
-          setStatus(`Connected to ${next.baseUrl} [${service.describeBackend()}]`)
+          setStatus("")
         }
         setExpanded((current) => {
           const nextDirSet = new Set(next.directories.map((d) => d.directory))
@@ -627,8 +688,9 @@ export function App({
 
   useEffect(() => {
     return () => {
+      backgroundGenerationRef.current++
       resetTerminalBackground(stdout)
-      void service.resetTerminalBackground()
+      void backgroundWritesRef.current.then(() => service.resetTerminalBackground()).catch(() => {})
     }
   }, [service, stdout])
 
@@ -730,8 +792,6 @@ export function App({
       try {
         await service.setThemeID(selectedThemeOption.id)
         setThemeID(selectedThemeOption.id)
-        writeTerminalBackground(stdout, getThemeScheme(selectedThemeOption.id).base.background)
-        void service.setTerminalBackground(getThemeScheme(selectedThemeOption.id).base.background)
         setTemporaryStatus(`Theme set to ${selectedThemeOption.name}`)
         setMode("browse")
       } catch (cause) {
@@ -1039,6 +1099,32 @@ export function App({
         return
       }
 
+      if (sidebarCollapsed) {
+        if (key.tab || key.return || key.escape || input === "?") void toggleSidebar()
+        else if (input === "q") void closeApp()
+        return
+      }
+      if (key.tab && mode === "browse" && !deleteTarget && !killTarget && !hideTarget && !showHelp) {
+        void toggleSidebar()
+        return
+      }
+
+      if (showHelp) {
+        if (input === "q") {
+          void closeApp()
+          return
+        }
+        if (key.escape || input === "?") setShowHelp(false)
+        else if (key.upArrow || key.pageUp) setHelpOffset(Math.max(0, helpStart - (key.pageUp ? helpViewportRows : 1)))
+        else if (key.downArrow || key.pageDown) setHelpOffset(Math.min(helpMaxOffset, helpStart + (key.pageDown ? helpViewportRows : 1)))
+        return
+      }
+      if (input === "?" && mode === "browse" && !deleteTarget && !killTarget && !hideTarget && !busy) {
+        setHelpOffset(0)
+        setShowHelp(true)
+        return
+      }
+
       if (deleteTarget) {
         if (key.escape || loweredInput === "n") {
           cancelDeleteSelection()
@@ -1298,29 +1384,13 @@ export function App({
   const sessionCount = snapshot?.directories.reduce((count, record) => count + record.sessions.length, 0) ?? 0
   const activeCount = snapshot?.activeSessions.length ?? 0
 
-  const detail = useMemo(() => {
-    if (!selectedRow) return "No project selected"
-    if (selectedRow.kind === "action") return selectedRow.detail
-    if (selectedRow.kind === "directory") {
-      const active = selectedRow.record.activeSessionIDs.length
-      return `${selectedRow.record.sessions.length} sessions${active ? ` | ${active} live` : ""}`
-    }
-    const active = selectedRow.record.activeSessionIDs.includes(selectedRow.session.id)
-    return `${selectedRow.session.id}${active ? " | live" : ""}`
-  }, [selectedRow])
-
-  const previewLabel = useMemo(() => {
-    if (!previewSession) return "idle"
-    const label = previewSession.session.title || previewSession.record.label
-    return truncate(label, compactLayout ? panelTextWidth : minimumWidth(panelTextWidth - 16))
-  }, [compactLayout, panelTextWidth, previewSession])
-
-  const activityGlyph = hasWorkingSessions ? "o" : activeCount > 0 ? "|" : "."
-  const statusTitle = `STATUS / MATRIX [${activityGlyph}]`
+  const runningCount = snapshot?.directories.reduce((count, record) => count + record.sessions.filter((session) => sessionIsWorking(session.status)).length, 0) ?? 0
+  const openCount = snapshot?.directories.reduce((count, record) => count + record.openSessionIDs.length, 0) ?? 0
+  const statusTitle = error ? "Connection issue" : snapshot ? "Connected" : "Connecting…"
   const showAddProjectModal = mode === "add-project"
   const showRenameSessionModal = mode === "rename-session"
   const showThemeModal = mode === "theme"
-  const showToolsPanel = !compactLayout || (!deleteTarget && !killTarget && !hideTarget)
+  const showToolsPanel = mode === "browse" && !deleteTarget && !killTarget && !hideTarget
   const addProjectDropdownLimit = compactLayout ? 4 : 6
   const visibleAddProjectOptions = useMemo(
     () => windowRows(addProjectOptions, addProjectOptionIndex, addProjectDropdownLimit),
@@ -1330,45 +1400,63 @@ export function App({
     if (!visibleAddProjectOptions.length) return 0
     return addProjectOptions.findIndex((option) => option.directory === visibleAddProjectOptions[0]?.directory)
   }, [addProjectOptions, visibleAddProjectOptions])
-  const apiState = snapshot ? "CONNECTED" : error ? "DEGRADED" : "BOOTING"
   const statusLines = useMemo(
-    () =>
-      compactLayout
-        ? [
-            metricLine("api", `[${apiState}]`, panelTextWidth),
-            metricLine("preview", `[${previewLabel}]`, panelTextWidth),
-            metricLine("workspace", `[${directoryCount} D | ${sessionCount} S | ${activeCount} LIVE]`, panelTextWidth),
-          ]
-        : [
-            metricLine("api", `[${apiState}]`, panelTextWidth),
-            metricLine("backend", `[${service.describeBackend().toUpperCase()}]`, panelTextWidth),
-            metricLine("preview", `[${previewLabel}]`, panelTextWidth),
-            metricLine("workspace", `[${directoryCount} D | ${sessionCount} S | ${activeCount} LIVE]`, panelTextWidth),
-          ],
-    [compactLayout, apiState, previewLabel, directoryCount, sessionCount, activeCount, panelTextWidth, service],
+    () => [
+      ...wrapTextHard(`${directoryCount} projects · ${sessionCount} sessions`, panelTextWidth),
+      ...(mode === "theme" && height < 20 ? [] : wrapTextHard(`${runningCount} running · ${openCount} open`, panelTextWidth)),
+      ...(previewSession ? [ `Preview: ${previewSession.session.title || "New session"}` ] : []),
+    ],
+    [directoryCount, sessionCount, runningCount, openCount, panelTextWidth, previewSession, mode, height],
   )
-  const statusMessageText = error ? `STATE      ERROR :: ${error}` : busy ? `STATE      WORK :: ${busy}` : `STATE      LINK :: ${status}`
-  const statusMessageLines = useMemo(() => wrapTextHard(statusMessageText, panelTextWidth), [statusMessageText, panelTextWidth])
-  const shortcutItems = useMemo(() => [
-    { key: "Enter", desc: "Load" },
-    { key: "Double-click", desc: "Open" },
-    { key: "N", desc: "New" },
-    { key: "E", desc: "Rename" },
-    { key: "D", desc: "Delete" },
-    { key: "H", desc: "Hide" },
-    { key: "K", desc: "Kill" },
-    { key: "/", desc: "Find" },
-    { key: "A", desc: "Add" },
-    { key: "T", desc: "Theme" },
-    { key: "Space", desc: "Expand" },
-    { key: "R", desc: "Restart" },
-    { key: "Q", desc: "Quit" },
-  ], [])
-  const toolsLines = useMemo(() => {
-    const mouseDesc = mouseEnabled ? "Click + arrow toggle enabled" : "Enable tmux mouse"
-    const shortcutDesc = shortcutItems.map((s) => `[${s.key}] ${s.desc}`).concat([`[Mouse] ${mouseDesc}`]).join("  ")
-    return wrapTextHard(shortcutDesc, panelTextWidth)
-  }, [mouseEnabled, panelTextWidth, shortcutItems])
+  const statusMessageText = error ? `Error: ${error}` : busy ? busy : status
+  const statusMessageLines = useMemo(() => statusMessageText ? wrapTextHard(statusMessageText, panelTextWidth - (busy ? 1 : 0)) : [], [statusMessageText, panelTextWidth, busy])
+  const toolsLines = packHints(
+    busy ? ["[q] Quit"] : selectedRow?.kind === "directory"
+      ? ["[Enter] Open", `[Space] ${expanded[selectedRow.record.directory] ?? selectedRow.record.pinned ? "Fold" : "Expand"}`, "[n] New", "[/] Find", "[?] Help"]
+      : selectedRow?.kind === "action" ? ["[Enter] Add project", "[/] Find", "[?] Help"]
+      : ["[Enter] Open", "[n] New", "[/] Find", "[?] Help"],
+    panelTextWidth,
+  )
+  const helpHeadings = new Set(["Navigate", "Sessions and projects", "Find and settings", "Mouse", "Text entry", "Confirmations"])
+  const helpTextWidth = minimumWidth(panelTextWidth - 2)
+  const helpLines = [
+    "Navigate",
+    "[Up/Down] Select item across projects",
+    "[Left/Right] Fold or expand project",
+    "[Space] Fold or expand project",
+    "[Enter] Open selection",
+    "[o] Open latest session or create one",
+    "",
+    "Sessions and projects",
+    "[n] New session · [a] Add project folder",
+    "[e] Rename session · [d] Delete session",
+    "[k] Close running session · [r] Restart",
+    "[h] Hide project · [x] Unpin project",
+    "",
+    "Find and settings",
+    "[/] Find · [t] Choose theme · [q] Quit",
+    `[${sidebarShortcut}] Toggle sidebar from either pane`,
+    "[Tab] Collapse sidebar while browsing",
+    "[Ctrl+C] Quit",
+    "",
+    "Mouse",
+    "Click anywhere on collapsed rail Expand sidebar",
+    "Click Select · Double-click Open",
+    "Click chevron Fold or expand",
+    `Wheel Scroll hovered project (${mouseEnabled ? "enabled" : "enable tmux mouse"})`,
+    "",
+    "Text entry",
+    "[Enter] Submit · [Esc] Cancel or clear search",
+    "[Up/Down] Choose autocomplete or theme",
+    "[Opt+Delete] / [Shift+Delete] Clear input",
+    "? Types a question mark in text fields",
+    "",
+    "Confirmations",
+    "[Enter / y] Confirm · [Esc / n] Cancel",
+  ].flatMap((line) => line ? wrapTextHard(line, helpTextWidth) : [""])
+  const helpViewportRows = Math.max(1, viewportHeight - 6 - (error ? 1 : 0))
+  const helpMaxOffset = Math.max(0, helpLines.length - helpViewportRows)
+  const helpStart = Math.min(helpOffset, helpMaxOffset)
   const addProjectLineEntries: ModalLineEntry[] = useMemo(
     () =>
       showAddProjectModal
@@ -1419,45 +1507,35 @@ export function App({
         : [],
     [showRenameSessionModal, inputValue, panelTextWidth],
   )
-  const themeLineEntries: ModalLineEntry[] = useMemo(
-    () =>
-      showThemeModal
-        ? [
-            ...wrapTextHard(`Theme :: ${selectedThemeOption?.name ?? theme.name}`, panelTextWidth).map((line) => ({
-              line,
-              color: theme.semantic.highlight as TextColor,
-            })),
-            ...wrapTextHard("Choose a color scheme for the sidebar.", panelTextWidth).map((line) => ({
-              line,
-              color: theme.base.foreground as TextColor,
-            })),
-            ...themeOptions.flatMap((option, index) => {
-              const selected = index === themeOptionIndex
-              return wrapTextHard(`${selected ? ">" : " "} ${themeOptionDisplay(option)}`, panelTextWidth).map((line) => ({
-                line,
-                color: selected ? theme.semantic.selectionFg : theme.base.foreground,
-                backgroundColor: selected ? theme.semantic.selectionBg : undefined,
-              }))
-            }),
-            ...wrapTextHard("[Up/Down] Choose  [Enter] Apply  [Esc] Cancel", panelTextWidth).map((line) => ({
-              line,
-              color: theme.semantic.warning as TextColor,
-            })),
-          ]
-        : [],
-    [showThemeModal, selectedThemeOption, theme, panelTextWidth, themeOptions, themeOptionIndex],
-  )
+  const themeControls = packHints([...(height < 20 ? [] : ["[↑↓] Choose"]), "[Enter] Apply", "[Esc] Cancel"], panelTextWidth)
+  const themeOverhead = 2 + (showBanner ? 3 : 0) + panelGap + 2 + statusLines.length + statusMessageLines.length + panelGap + 2 + 1 + (compactLayout ? 0 : 1) + themeControls.length
+  const themeWindowLimit = Math.max(1, Math.min(8, viewportHeight - themeOverhead))
+  const visibleThemeOptions = windowRows(themeOptions, themeOptionIndex, themeWindowLimit)
+  const themeLineEntries: ModalLineEntry[] = showThemeModal ? [
+    { line: `Theme ${themeOptionIndex + 1} of ${themeOptions.length}`, color: theme.semantic.highlight },
+    ...(!compactLayout ? [{ line: "Swatches: BG · FG · Text · Accent", color: theme.base.foreground }] : []),
+    ...visibleThemeOptions.map((option) => ({
+      line: option.name,
+      palette: getThemeScheme(option.id),
+      color: option.id === selectedThemeOption?.id ? theme.semantic.selectionFg : theme.base.foreground,
+      backgroundColor: option.id === selectedThemeOption?.id ? theme.semantic.selectionBg : undefined,
+    })),
+    ...themeControls.map((line) => ({ line, color: theme.semantic.warning })),
+  ] : []
+  const selectedDirectory = selectedRow && selectedRow.kind !== "action" ? selectedRow.record.directory : undefined
+  const homeDirectory = process.env.HOME
+  const selectedPath = selectedDirectory && homeDirectory && (selectedDirectory === homeDirectory || selectedDirectory.startsWith(`${homeDirectory}/`))
+    ? `~${selectedDirectory.slice(homeDirectory.length)}`
+    : selectedDirectory
   const promptPrimary = mode === "search"
     ? `/ ${inputValue}`
-    : selectedRow?.kind === "action" ? selectedRow.detail : selectedRow?.record.directory ?? "No project selected"
-  const promptPrimaryLines = useMemo(() => wrapTextHard(promptPrimary, panelTextWidth), [promptPrimary, panelTextWidth])
-  const promptDetail = useMemo(
-    () =>
-      mode === "search"
-        ? ["[Enter] submit  [Esc] cancel"]
-        : wrapTextHard(rows.length > 0 ? `${selectedIndex + 1}/${rows.length}  ${detail}` : `FOCUS ${detail}`, panelTextWidth),
-    [mode, rows.length, selectedIndex, detail, panelTextWidth],
-  )
+    : selectedRow?.kind === "session" ? selectedRow.session.title || "New session"
+    : selectedRow?.kind === "directory" ? selectedRow.record.label
+    : selectedRow?.kind === "action" ? "Add project folder" : "No project selected"
+  const promptPrimaryLines = [promptPrimary]
+  const promptDetail = mode === "search"
+    ? ["Enter Open · Esc Clear / Back"]
+    : [selectedPath ?? (selectedRow?.kind === "action" ? selectedRow.detail : "")].filter(Boolean)
   const deleteLines = useMemo(
     () =>
       deleteTarget
@@ -1491,50 +1569,44 @@ export function App({
         : [],
     [hideTarget, panelTextWidth],
   )
-  const projectHeader = sectionRule(rows.length ? `PROJECT MATRIX ${selectedIndex + 1}/${rows.length}` : "PROJECT MATRIX", sectionTextWidth)
-  const projectFooter = rows.length > 0 ? truncate(`FOCUS :: ${selectedIndex + 1}/${rows.length} :: ${detail}`, sectionTextWidth) : truncate(`FOCUS :: ${detail}`, sectionTextWidth)
+  const projectPosition = rows.length ? `${selectedIndex + 1}/${rows.length}` : ""
+  const projectHeader = fitLine("PROJECTS", Math.max(0, sectionTextWidth - projectPosition.length)) + projectPosition
+  const ageWidth = Math.max(3, ...rows.map((row) => row.kind === "session" ? relativeTime(row.session.time.updated, now).length : 0))
 
-  const projectPanelStaticHeight = 2 + (loading && !snapshot ? 1 : 0) + (!rows.length && !loading ? 1 : 0)
-  const fixedHeight =
-    (showBanner ? 3 + panelGap : 0) +
-    (3 + statusLines.length + statusMessageLines.length + panelGap) +
-    (deleteTarget ? 3 + deleteLines.length + panelGap : 0) +
-    (killTarget ? 3 + killLines.length + panelGap : 0) +
-    (hideTarget ? 3 + hideLines.length + panelGap : 0) +
-    (showAddProjectModal ? 3 + addProjectLineEntries.length + panelGap : 0) +
-    (showRenameSessionModal ? 3 + renameSessionLines.length + panelGap : 0) +
-    (showThemeModal ? 3 + themeLineEntries.length + panelGap : 0) +
-    (showToolsPanel ? 3 + toolsLines.length + panelGap : 0) +
-    (mode !== "add-project" && mode !== "rename-session" && mode !== "theme" ? 3 + promptPrimaryLines.length + promptDetail.length + panelGap : 0) +
-    projectPanelStaticHeight
-  const visibleRowCount = Math.max(1, height - fixedHeight)
-  const visibleRows = useMemo(() => windowRows(rows, selectedIndex, visibleRowCount), [rows, selectedIndex, visibleRowCount])
-  const firstVisibleIndex = useMemo(() => {
-    if (!visibleRows.length) return 0
-    return rows.findIndex((row) => row.key === visibleRows[0]?.key)
-  }, [rows, visibleRows])
+  // Count rendered rows once for both the viewport budget and mouse coordinates.
+  const sectionHeight = (shown: boolean, contentRows: number) => shown ? panelGap + 2 + contentRows : 0
+  const beforeProjectRows =
+    2 + // outer top padding and collapse control
+    (showBanner ? 3 : 0) +
+    sectionHeight(true, statusLines.length + statusMessageLines.length) +
+    sectionHeight(Boolean(deleteTarget), deleteLines.length) +
+    sectionHeight(Boolean(killTarget), killLines.length) +
+    sectionHeight(Boolean(hideTarget), hideLines.length) +
+    sectionHeight(showAddProjectModal, addProjectLineEntries.length) +
+    sectionHeight(showRenameSessionModal, renameSessionLines.length) +
+    sectionHeight(showThemeModal, themeLineEntries.length) +
+    panelGap + 2 + // separator and project heading
+    (loading && !snapshot ? 1 : 0) +
+    (!loading && snapshot?.directories.length === 0 ? 1 : 0)
+  const projectRowsStartY = beforeProjectRows + 1 // SGR mouse coordinates are one based.
+  const showPrompt = mode !== "add-project" && mode !== "rename-session" && mode !== "theme"
+  const promptHeight = showPrompt ? panelGap + (showToolsPanel ? 0 : 1) + (mode === "search" ? 1 : promptPrimaryLines.length) + promptDetail.length : 0
+  const fixedHeight = beforeProjectRows + (showToolsPanel ? panelGap + 1 + toolsLines.length : 0) + promptHeight
+  const visibleRowCount = Math.max(1, viewportHeight - fixedHeight)
+  const projectedSelectedIndex = Math.max(0, projected.display.findIndex((row) => row.key === selectedRow?.key))
+  const visibleRows = useMemo(() => windowRows(projected.display, projectedSelectedIndex, visibleRowCount), [projected.display, projectedSelectedIndex, visibleRowCount])
 
   const mouseContextRef = useRef<{
     mode: Mode
-    showBanner: boolean
-    panelGap: number
-    statusLines: string[]
-    statusMessageLines: string[]
-    deleteTarget: DeleteTarget | undefined
-    deleteLines: string[]
-    killTarget: KillTarget | undefined
-    killLines: string[]
-    hideTarget: HideTarget | undefined
-    hideLines: string[]
-    showAddProjectModal: boolean
-    showRenameSessionModal: boolean
-    showThemeModal: boolean
-    addProjectLineEntries: ModalLineEntry[]
-    renameSessionLines: string[]
-    themeLineEntries: ModalLineEntry[]
-    loading: boolean
-    snapshot: Snapshot | null
-    visibleRows: SidebarRow[]
+    sidebarCollapsed: boolean
+    width: number
+    height: number
+    toggleSidebar: () => Promise<void>
+    projectRowsStartY: number
+    showHelp: boolean
+    visibleRows: DisplayRow[]
+    projectOffsets: Record<string, number>
+    setProjectOffsets: React.Dispatch<React.SetStateAction<Record<string, number>>>
     rows: SidebarRow[]
     selectedIndex: number
     scrollIndexRef: React.MutableRefObject<number>
@@ -1545,25 +1617,15 @@ export function App({
   }>(null!)
   const mouseContext = {
     mode,
-    showBanner,
-    panelGap,
-    statusLines,
-    statusMessageLines,
-    deleteTarget,
-    deleteLines,
-    killTarget,
-    killLines,
-    hideTarget,
-    hideLines,
-    showAddProjectModal,
-    showRenameSessionModal,
-    showThemeModal,
-    addProjectLineEntries,
-    renameSessionLines,
-    themeLineEntries,
-    loading,
-    snapshot,
+    sidebarCollapsed,
+    width,
+    height,
+    toggleSidebar,
+    projectRowsStartY,
+    showHelp,
     visibleRows,
+    projectOffsets: projected.offsets,
+    setProjectOffsets,
     rows,
     selectedIndex,
     scrollIndexRef,
@@ -1577,21 +1639,17 @@ export function App({
   const handleMouseSelection = useCallback(
     (input: string) => {
       const ctx = mouseContextRef.current
-      if (ctx.mode !== "browse") return false
+      for (const event of parseSgrMouseInput(input)) {
+        const insidePane = event.x >= 1 && event.x <= ctx.width && event.y >= 1 && event.y <= ctx.height
+        if (event.code === 0 && event.release && insidePane && (ctx.sidebarCollapsed || (!ctx.showHelp && event.y === 2))) {
+          void ctx.toggleSidebar()
+          return true
+        }
+      }
+      if (ctx.sidebarCollapsed) return false
+      if (ctx.mode !== "browse" || ctx.showHelp) return false
 
-      let projectRowsStartY = 2
-      if (ctx.showBanner) projectRowsStartY += 3
-      projectRowsStartY += ctx.panelGap
-      projectRowsStartY += 3 + ctx.statusLines.length + ctx.statusMessageLines.length
-      if (ctx.deleteTarget) projectRowsStartY += ctx.panelGap + 3 + ctx.deleteLines.length
-      if (ctx.killTarget) projectRowsStartY += ctx.panelGap + 3 + ctx.killLines.length
-      if (ctx.hideTarget) projectRowsStartY += ctx.panelGap + 3 + ctx.hideLines.length
-      if (ctx.showAddProjectModal) projectRowsStartY += ctx.panelGap + 3 + ctx.addProjectLineEntries.length
-      if (ctx.showRenameSessionModal) projectRowsStartY += ctx.panelGap + 3 + ctx.renameSessionLines.length
-      if (ctx.showThemeModal) projectRowsStartY += ctx.panelGap + 3 + ctx.themeLineEntries.length
-      projectRowsStartY += ctx.panelGap + 1
-      if (ctx.loading && !ctx.snapshot) projectRowsStartY += 1
-      if (!ctx.loading && ctx.snapshot?.directories.length === 0) projectRowsStartY += 1
+      const projectRowsStartY = ctx.projectRowsStartY
 
       let handled = false
       let scrollDelta = 0
@@ -1599,7 +1657,19 @@ export function App({
         if ((event.code & 64) !== 0) {
           if (event.release) continue
           if (event.y < projectRowsStartY || event.y >= projectRowsStartY + ctx.visibleRows.length || !ctx.rows.length) continue
-          scrollDelta += (event.code & 1) === 0 ? -1 : 1
+          const delta = (event.code & 1) === 0 ? -1 : 1
+          const hovered = ctx.visibleRows[event.y - projectRowsStartY]
+          const directory = hovered?.kind === "session" ? hovered.record.directory : hovered?.kind === "overflow" ? hovered.directory : undefined
+          if (directory) {
+            const next = scrollProjectWindow(ctx.rows, directory, ctx.projectOffsets[directory] ?? 0, delta, ctx.rows[ctx.scrollIndexRef.current]?.key)
+            ctx.projectOffsets[directory] = next.start
+            ctx.setProjectOffsets((current) => ({ ...current, [directory]: next.start }))
+            if (next.selectedKey) {
+              const index = ctx.rows.findIndex((row) => row.key === next.selectedKey)
+              if (index >= 0) ctx.scrollIndexRef.current = index
+              ctx.setSelectedKey(next.selectedKey)
+            }
+          } else scrollDelta += delta
           handled = true
           continue
         }
@@ -1613,9 +1683,9 @@ export function App({
           continue
         }
         const row = ctx.visibleRows[rowIndex]
-        if (!row) continue
+        if (!row || row.kind === "overflow") continue
 
-        const inDirectoryToggle = row.kind === "directory" && event.x <= 5
+        const inDirectoryToggle = row.kind === "directory" && event.x >= 4 && event.x <= 5
 
         if (!event.release) {
           mousePressTargetRef.current = {
@@ -1686,13 +1756,52 @@ export function App({
     }
   }, [mouseEnabled, stdin, setRawMode])
 
+  if (sidebarCollapsed) {
+    return (
+      <Box width={width} height={viewportHeight} overflow="hidden" backgroundColor={theme.base.background}>
+        <Box width={width} flexDirection="column" alignItems="center" flexShrink={0} paddingTop={1}>
+          <Text color={theme.semantic.info} bold>›</Text>
+          <Text> </Text>
+          <Text color={openCount ? theme.semantic.highlight : theme.semantic.muted}>≡</Text>
+          <Text> </Text>
+          <Text color={error ? theme.semantic.error : runningCount ? theme.semantic.success : theme.semantic.muted}>
+            {error ? "!" : runningCount ? "●" : "○"}
+          </Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  if (showHelp) {
+    return (
+      <Box width={width} height={viewportHeight} overflow="hidden" backgroundColor={theme.base.background}>
+        <Box width={width} flexDirection="column" flexShrink={0} paddingX={1} paddingTop={1}>
+        <Frame width={panelTextWidth} theme={theme}>
+          <Text color={theme.semantic.info} bold wrap="truncate-end">Help</Text>
+          <Text color={theme.semantic.muted} wrap="truncate-end">{`Theme: ${theme.name}`}</Text>
+          {error ? <Text color={theme.semantic.error} wrap="truncate-end">{`Error: ${error}`}</Text> : null}
+          {Array.from({ length: helpViewportRows }, (_, index) => {
+            const line = helpLines[helpStart + index] || " "
+            return helpHeadings.has(line) ? <Text key={index} color={theme.semantic.info} bold wrap="truncate-end">{line}</Text> : <KeyHints key={index} line={line} theme={theme} />
+          })}
+          <KeyHints line={helpTextWidth < 24 ? "[↑↓] Scroll [Esc]" : helpTextWidth < 45 ? "[↑↓] Scroll · [Esc] Back" : `[Esc/?] Back · [↑↓] Scroll ${helpStart + 1}/${helpLines.length}`} theme={theme} />
+        </Frame>
+        </Box>
+      </Box>
+    )
+  }
+
+  // Keep a full terminal frame, but don't squash panels when wrapped content
+  // exceeds its height: overflowing text would otherwise overwrite other rows.
   return (
-    <Box flexDirection="column" width={width} height={height} paddingX={1} paddingTop={1} backgroundColor={theme.base.background}>
+    <Box flexDirection="column" width={width} height={viewportHeight} overflow="hidden" backgroundColor={theme.base.background}>
+    <Box flexDirection="column" width={width} minHeight={viewportHeight} flexShrink={0} paddingX={1} paddingTop={1}>
+      <Text color={theme.semantic.info} wrap="truncate-end">{`‹ [Tab] Collapse · [${sidebarShortcut}] Toggle`}</Text>
       {showBanner ? (
-        <Box width={panelOuterWidth} flexDirection="column" borderStyle="single" borderColor={theme.semantic.highlight} paddingX={1}>
+        <Frame width={panelOuterWidth} theme={theme}>
           <MascotBanner
             compact={compactLayout}
-            width={panelTextWidth}
+            width={minimumWidth(panelTextWidth - 2)}
             busy={hasWorkingSessions}
             activeCount={activeCount}
             recentlyActive={recentlyActive}
@@ -1701,19 +1810,19 @@ export function App({
             theme={theme}
             frame={slowFrame}
           />
-        </Box>
+        </Frame>
       ) : null}
 
       <Box marginTop={panelGap}>
-        <Panel title={statusTitle} width={panelTextWidth} borderColor={theme.semantic.border} titleColor={theme.semantic.info}>
+        <Panel title={statusTitle} width={panelTextWidth} ruleColor={theme.semantic.border} titleColor={error ? theme.semantic.error : snapshot ? theme.semantic.success : theme.semantic.warning}>
           {statusLines.map((line, index) => (
-            <Text key={`status-line-${index}`} color={theme.base.foreground}>
-              {fitLine(line, panelTextWidth)}
+            <Text key={`status-line-${index}`} color={theme.semantic.muted} wrap="truncate-end">
+              {line}
             </Text>
           ))}
           {statusMessageLines.map((line, index) => (
             <Text key={`status-message-${index}`} color={error ? theme.semantic.error : busy ? theme.semantic.warning : theme.semantic.muted}>
-              {fitLine(line, panelTextWidth)}
+              {fitLine(line, panelTextWidth - (busy && index === statusMessageLines.length - 1 ? 1 : 0))}
               {busy && index === statusMessageLines.length - 1 ? <AnimatedSpinner active={true} frame={animFrame} /> : null}
             </Text>
           ))}
@@ -1722,7 +1831,7 @@ export function App({
 
       {deleteTarget ? (
         <Box marginTop={panelGap}>
-          <Panel title="DELETE / ARM / CONFIRM" width={panelTextWidth} borderColor={theme.semantic.error} titleColor={theme.semantic.error}>
+          <Panel title="Delete session" width={panelTextWidth} ruleColor={theme.semantic.border} titleColor={theme.semantic.error}>
             {deleteLines.map((line, index) => (
               <Text key={`delete-${index}`} color={index === 2 ? theme.semantic.warning : theme.base.foreground}>
                 {fitLine(line, panelTextWidth)}
@@ -1734,7 +1843,7 @@ export function App({
 
       {killTarget ? (
         <Box marginTop={panelGap}>
-          <Panel title="KILL / WINDOW / CONFIRM" width={panelTextWidth} borderColor={theme.semantic.warning} titleColor={theme.semantic.warning}>
+          <Panel title="Close running session" width={panelTextWidth} ruleColor={theme.semantic.border} titleColor={theme.semantic.warning}>
             {killLines.map((line, index) => (
               <Text key={`kill-${index}`} color={index === 2 ? theme.semantic.warning : theme.base.foreground}>
                 {fitLine(line, panelTextWidth)}
@@ -1746,7 +1855,7 @@ export function App({
 
       {hideTarget ? (
         <Box marginTop={panelGap}>
-          <Panel title="HIDE / PROJECT / CONFIRM" width={panelTextWidth} borderColor={theme.semantic.error} titleColor={theme.semantic.error}>
+          <Panel title="Hide project" width={panelTextWidth} ruleColor={theme.semantic.border} titleColor={theme.semantic.error}>
             {hideLines.map((line, index) => (
               <Text key={`hide-${index}`} color={index === 2 ? theme.semantic.warning : theme.base.foreground}>
                 {fitLine(line, panelTextWidth)}
@@ -1758,7 +1867,7 @@ export function App({
 
       {showAddProjectModal ? (
         <Box marginTop={panelGap}>
-          <Panel title="ADD / PROJECT / FOLDER" width={panelTextWidth} borderColor={theme.semantic.success} titleColor={theme.semantic.success}>
+          <Panel title="Add project folder" width={panelTextWidth} ruleColor={theme.semantic.border} titleColor={theme.semantic.success}>
             {addProjectLineEntries.map((entry, index) => {
               return (
                 <Text key={`add-project-${index}`} color={entry.color} backgroundColor={entry.backgroundColor}>
@@ -1772,7 +1881,7 @@ export function App({
 
       {showRenameSessionModal ? (
         <Box marginTop={panelGap}>
-          <Panel title="RENAME / SESSION / TITLE" width={panelTextWidth} borderColor={theme.ansi.magenta} titleColor={theme.ansi.magenta}>
+          <Panel title="Rename session" width={panelTextWidth} ruleColor={theme.semantic.border} titleColor={theme.ansi.magenta}>
             {renameSessionLines.map((line, index) => (
               <Text key={`rename-session-${index}`} color={index === 2 ? theme.semantic.warning : index === 0 ? theme.ansi.magenta : theme.base.foreground}>
                 {fitLine(line, panelTextWidth)}
@@ -1784,41 +1893,43 @@ export function App({
 
       {showThemeModal ? (
         <Box marginTop={panelGap}>
-          <Panel title="THEME / SELECTOR" width={panelTextWidth} borderColor={theme.semantic.highlight} titleColor={theme.semantic.highlight}>
+          <Panel title={height < 20 ? "Choose theme [↑↓]" : "Choose theme"} width={panelTextWidth} ruleColor={theme.semantic.border} titleColor={theme.semantic.highlight}>
             {themeLineEntries.map((entry, index) => {
-              return (
-                <Text key={`theme-line-${index}`} color={entry.color} backgroundColor={entry.backgroundColor}>
-                  {fitLine(entry.line, panelTextWidth)}
-                </Text>
-              )
+              if (!entry.palette) return <Text key={index} color={entry.color} wrap="truncate-end">{entry.line}</Text>
+              const palette = entry.palette
+              const colors = [palette.base.background, palette.semantic.panelBg, palette.semantic.info, palette.semantic.highlight]
+              const selected = palette.id === selectedThemeOption?.id
+              return <Box key={palette.id} width={panelTextWidth} height={1} backgroundColor={entry.backgroundColor}>
+                <Text color={entry.color}>{selected ? "> " : "  "}</Text>
+                {colors.map((color, swatch) => <Text key={swatch}>{swatch ? <Text> </Text> : null}<Text color={color} backgroundColor={color}>█</Text></Text>)}
+                <Box width={Math.max(0, panelTextWidth - 2 - (colors.length * 2 - 1))} flexShrink={0}>
+                  <Text color={entry.color} wrap="truncate-end">{` ${entry.line}`}</Text>
+                </Box>
+              </Box>
             })}
           </Panel>
         </Box>
       ) : null}
 
       <Box marginTop={panelGap} flexDirection="column">
+        <Text color={theme.semantic.border}>{"─".repeat(sectionTextWidth)}</Text>
         <Text color={theme.semantic.muted}>{truncate(projectHeader, sectionTextWidth)}</Text>
         {loading && !snapshot ? <Text color={theme.semantic.warning}>SYNC :: workspace...</Text> : null}
         {!loading && snapshot?.directories.length === 0 ? <Text color={theme.semantic.muted}>No projects yet. Add a project folder to get started.</Text> : null}
-        {visibleRows.map((row, visibleIndex) => {
-          const index = firstVisibleIndex + visibleIndex
-          const selected = index === selectedIndex
+        {visibleRows.map((row) => {
+          if (row.kind === "overflow") return <Text key={row.key} color={theme.semantic.muted} wrap="truncate-end">{`    ... ${row.count} ${row.above ? "above" : "more"}`}</Text>
+          const selected = row.key === selectedRow?.key
           const selectedForeground: TextColor = selected ? theme.semantic.selectionFg : undefined
           const selectedBackground = selected ? theme.semantic.selectionBg : undefined
           const rowWidth = sectionTextWidth
 
+          const selectionMarker = selected ? "> " : "  "
+
           if (row.kind === "action") {
-            const suffix = "[ADD]"
-            const label = ` + ${row.label}`
-            const availableWidth = minimumWidth(rowWidth - suffix.length - 1)
             return (
-              <Box key={row.key} width={rowWidth} justifyContent="space-between">
-                <Text color={selected ? selectedForeground : theme.semantic.success} backgroundColor={selectedBackground} bold>
-                  <SelectAnimationGlyph selected={selected} frame={animFrame} />
-                  <Text>{truncate(label, availableWidth)}</Text>
-                </Text>
-                <Text color={selected ? selectedForeground : theme.semantic.muted} backgroundColor={selectedBackground}>
-                  {suffix}
+              <Box key={row.key} width={rowWidth} backgroundColor={selectedBackground}>
+                <Text color={selected ? selectedForeground : theme.semantic.muted} wrap="truncate-end">
+                  {`${selectionMarker}Add project folder`}
                 </Text>
               </Box>
             )
@@ -1827,21 +1938,16 @@ export function App({
           if (row.kind === "directory") {
             const expandedNow = mode === "search" ? true : expanded[row.record.directory] ?? row.record.pinned
             const activeDirectoryCount = row.record.activeSessionIDs.length
-            const hasWorkingSession = row.record.sessions.some((session) => sessionIsWorking(session.status))
-            const hasCompleted = row.record.sessions.some((session) => sessionJustCompleted(session.status))
-            const marker = activeDirectoryCount > 0 ? "|" : hasCompleted ? "*" : " "
             const suffix = activeDirectoryCount > 0 ? `${activeDirectoryCount}/${row.record.sessions.length}` : `${row.record.sessions.length}`
-            const label = `${expandedNow ? "v" : ">"} ${row.record.label}`
-            const availableWidth = minimumWidth(rowWidth - suffix.length - 5)
+            const labelWidth = Math.max(0, rowWidth - 4 - suffix.length - 1)
             return (
-              <Box key={row.key} width={rowWidth} justifyContent="space-between">
-                <Text color={selected ? selectedForeground : theme.semantic.info} backgroundColor={selectedBackground} bold>
-                  {hasWorkingSession ? <LiveActivityGlyph active={true} frame={animFrame} /> : <Text>{marker}</Text>}
-                  <Text>{truncate(` ${label}`, availableWidth - 1)}</Text>
-                </Text>
-                <Text color={selected ? selectedForeground : hasCompleted ? theme.semantic.error : theme.semantic.muted} backgroundColor={selectedBackground}>
-                  {suffix}
-                </Text>
+              <Box key={row.key} width={rowWidth} backgroundColor={selectedBackground}>
+                <Text color={selectedForeground}>{selectionMarker}</Text>
+                <Text color={selected ? selectedForeground : theme.semantic.muted}>{expandedNow ? "⌄ " : "› "}</Text>
+                <Box width={labelWidth} flexShrink={0}>
+                  <Text color={selected ? selectedForeground : theme.semantic.info} bold wrap="truncate-end">{row.record.label}</Text>
+                </Box>
+                <Text color={selected ? selectedForeground : theme.semantic.muted}>{` ${suffix}`}</Text>
               </Box>
             )
           }
@@ -1850,68 +1956,33 @@ export function App({
           const isPreview = snapshot?.previewSessionID === row.session.id
           const isWorking = sessionIsWorking(row.session.status)
           const completion = sessionJustCompleted(row.session.status)
-          const suffix = relativeTime(row.session.time.updated, now)
-          const marker = completion ? "*" : isPreview ? ">" : isActive ? "|" : "."
-          const leftWidth = minimumWidth(rowWidth - suffix.length - 1)
-          const titleWidth = minimumWidth(leftWidth - 5)
-          const color: TextColor = selected
-            ? selectedForeground
-            : completion
-              ? theme.semantic.error
-              : isWorking || isActive
-                ? theme.semantic.success
-                : isPreview
-                  ? theme.ansi.magenta
-                  : theme.base.foreground
-          const markerColor: TextColor = selected ? selectedForeground : isWorking ? theme.semantic.success : completion ? theme.semantic.error : isPreview ? theme.ansi.magenta : isActive ? theme.semantic.success : theme.semantic.muted
+          const suffix = relativeTime(row.session.time.updated, now).padStart(ageWidth)
+          const marker = isWorking ? LIVE_FRAMES[animFrame % LIVE_FRAMES.length] : completion ? "*" : isPreview ? ">" : isActive ? "•" : "·"
+          const titleWidth = Math.max(0, rowWidth - 6 - ageWidth - 1)
+          const markerColor: TextColor = selected ? selectedForeground : isWorking ? theme.semantic.warning : completion ? theme.semantic.success : isPreview ? theme.semantic.info : isActive ? theme.semantic.success : theme.semantic.muted
           return (
-            <Box key={row.key} width={rowWidth} justifyContent="space-between">
-              <Box width={leftWidth}>
-                <Text color={color} backgroundColor={selectedBackground}>
-                  {"|-- "}
-                </Text>
-                {isWorking ? (
-                  <LiveActivityGlyph active={true} frame={animFrame} />
-                ) : (
-                  <Text color={markerColor} backgroundColor={selectedBackground}>
-                    {marker}
-                  </Text>
-                )}
-                <Text color={color} backgroundColor={selectedBackground}>
-                  {truncate(` ${row.session.title || "New session"}`, titleWidth)}
-                </Text>
+            <Box key={row.key} width={rowWidth} backgroundColor={selectedBackground}>
+              <Text color={selectedForeground}>{`${selectionMarker}  `}</Text>
+              <Text color={markerColor}>{`${marker} `}</Text>
+              <Box width={titleWidth} flexShrink={0}>
+                <Text color={selected ? selectedForeground : theme.base.foreground} wrap="truncate-end">{row.session.title || "New session"}</Text>
               </Box>
-              <Text color={selected ? selectedForeground : completion ? theme.semantic.error : theme.semantic.muted} backgroundColor={selectedBackground}>
-                {suffix}
-              </Text>
+              <Text color={selected ? selectedForeground : theme.semantic.muted}>{` ${suffix}`}</Text>
             </Box>
           )
         })}
-        <Text color={theme.semantic.muted}>{truncate(projectFooter, sectionTextWidth)}</Text>
       </Box>
 
       {showToolsPanel ? (
-        <Box marginTop={panelGap}>
-          <Panel title="SHORTCUTS" width={panelTextWidth} borderColor={theme.semantic.border} titleColor={theme.semantic.info}>
-            {toolsLines.map((line, index) => {
-              const segments = line.split(/(\[.*?\])/g)
-              return (
-                <Text key={`tool-${index}`}>
-                  {segments.map((segment, segIndex) => {
-                    if (segment.startsWith("[") && segment.endsWith("]")) {
-                      return <Text key={segIndex} color={theme.semantic.info}>{segment}</Text>
-                    }
-                    return <Text key={segIndex} color={theme.semantic.muted}>{segment}</Text>
-                  })}
-                </Text>
-              )
-            })}
-          </Panel>
+        <Box marginTop={panelGap} flexDirection="column" width={panelTextWidth}>
+          <Text color={theme.semantic.border}>{"─".repeat(panelTextWidth)}</Text>
+          {toolsLines.map((line, index) => <KeyHints key={`hint-${index}`} line={line} theme={theme} />)}
         </Box>
       ) : null}
 
       {mode !== "add-project" && mode !== "rename-session" && mode !== "theme" ? (
-        <Box width={panelOuterWidth} marginTop={panelGap} borderStyle="single" borderColor={mode === "browse" ? theme.semantic.border : theme.semantic.success} flexDirection="column" paddingX={1}>
+        <Box width={panelOuterWidth} marginTop={panelGap} flexDirection="column">
+          {!showToolsPanel ? <Text color={theme.semantic.border}>{"─".repeat(panelTextWidth)}</Text> : null}
           {mode === "search" ? (
               <Text color={theme.semantic.success}>
                 {fitLine(`/ ${inputValue}`, panelTextWidth - 1)}
@@ -1919,18 +1990,19 @@ export function App({
               </Text>
           ) : (
             promptPrimaryLines.map((line, index) => (
-              <Text key={`prompt-primary-${index}`} color={mode === "browse" ? theme.base.foreground : theme.semantic.success}>
-                {fitLine(line, panelTextWidth)}
+              <Text key={`prompt-primary-${index}`} color={mode === "browse" ? theme.base.foreground : theme.semantic.success} wrap="truncate-end">
+                {line}
               </Text>
             ))
           )}
           {promptDetail.map((line, index) => (
-            <Text key={`prompt-${index}`} color={theme.semantic.muted}>
-              {fitLine(line, panelTextWidth)}
+            <Text key={`prompt-${index}`} color={theme.semantic.muted} wrap="truncate-end">
+              {line}
             </Text>
           ))}
         </Box>
       ) : null}
+    </Box>
     </Box>
   )
 }
