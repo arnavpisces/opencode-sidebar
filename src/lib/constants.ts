@@ -5,6 +5,7 @@ export const APP_NAME = "opencode-sidebar"
 export const APP_DIR = process.env.OPENCODE_SIDEBAR_DIR ?? path.join(os.homedir(), ".local", "share", APP_NAME)
 export const STATE_FILE = path.join(APP_DIR, "state.json")
 export const SERVER_LOG_FILE = path.join(APP_DIR, "opencode-server.log")
+export const SERVER_PASSWORD_FILE = path.join(APP_DIR, "opencode-v2-password")
 export const PRIVATE_DIRECTORY_MODE = 0o700
 export const PRIVATE_FILE_MODE = 0o600
 export const DEFAULT_PORT = 42112

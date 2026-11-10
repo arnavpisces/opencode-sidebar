@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 - 2026-11-11
+
+- Added OpenCode 2 support while retaining OpenCode 1 compatibility, including version-aware server access, session management, terminal attachment, status updates, and notifications.
+- Added a private, per-sidebar-state server credential for OpenCode 2 and support for reconnecting to the sidebar's existing server.
+- Fixed shutdown races that could restart a server during exit, handled deleted project directories during pending-request sync, and preserved streamed events when line endings cross network chunks.
+- Added isolated compatibility checks for both OpenCode generations, including a local mock-model prompt, rendered terminal sessions, notifications, and server cleanup. Made the rendering fixture deterministic and fixed tmux integration scripts to report failures.
+
 ## 0.4.0 - 2026-09-30
 
 - Added sidebar collapse and expansion from either pane with the tmux prefix followed by Tab. The collapsed view is a five-column icon rail; clicking anywhere on it restores the previous width and sidebar focus without restarting OpenCode. Selection, search text, dialogs, and collapsed state survive toggles and session recall.

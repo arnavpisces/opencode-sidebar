@@ -16,7 +16,7 @@ OpenCode is easier to use when the session list, preview pane, and TUI stay toge
 - Background active sessions
 - Session deletion from the sidebar
 - Sound notifications when OpenCode needs input or finishes work
-- Automatic cleanup of parked `opencode attach` panes
+- Automatic cleanup of parked OpenCode panes
 
 ## Quick Start
 
@@ -26,6 +26,10 @@ OpenCode is easier to use when the session list, preview pane, and TUI stay toge
 - `opencode`
 
 Make sure they are installed and available in your PATH.
+
+OpenCode 1.x and 2.x are supported. The sidebar detects the installed major
+version and uses its matching server API and terminal command. OpenCode manages
+its own session migration and storage; the sidebar does not move session data.
 
 ### Package
 
@@ -93,11 +97,19 @@ The sidebar collapses to a five-column icon rail (plus the tmux divider): `›` 
 - `OPENCODE_SIDEBAR_NOTIFY_COMPLETE_SOUND`: custom sound for completion
 - Sound values can be a system sound name like `Glass` or `Ping`, or a full path such as `~/Music/done.aiff`
 
+For OpenCode 2, the sidebar keeps a generated local server password in its
+private state directory (`opencode-v2-password`, readable only by the current
+user). It is shared by sidebar processes using that directory so they can
+reconnect to the same server.
+
 ## Release Checks
 
 - `npm run verify`: typecheck, unit tests, and build
 - `npm run verify:tmux`: manual tmux integration checks in isolated temp workspaces
 - `npm run verify:release`: full maintainer-only release check
+- `./test/run-version-compat.sh /absolute/path/to/opencode`: run the real tmux
+  flows against a particular OpenCode binary with isolated data and settings;
+  run once with an OpenCode 1 binary and once with an OpenCode 2 binary.
 
 ## Contribution
 

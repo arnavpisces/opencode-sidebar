@@ -17,7 +17,8 @@ cleanup() {
 
 trap cleanup EXIT
 
-tmux new-session -d -s "$SESSION_NAME" "cd \"$ROOT\" && OPENCODE_SIDEBAR_BACKEND=tmux OPENCODE_SIDEBAR_DIR=\"$STATE_DIR\" OPENCODE_SIDEBAR_TEST_ROOT=\"$TEST_ROOT\" bun run \"$ROOT/test/tmux-flow.ts\" >\"$LOG\" 2>&1; tmux wait-for -S \"$WAIT_KEY\""
+tmux new-session -d -s "$SESSION_NAME" "cd \"$ROOT\" && OPENCODE_SIDEBAR_BACKEND=tmux OPENCODE_SIDEBAR_DIR=\"$STATE_DIR\" OPENCODE_SIDEBAR_TEST_ROOT=\"$TEST_ROOT\" bun run \"$ROOT/test/tmux-flow.ts\" >\"$LOG\" 2>&1; printf '%s' \$? >\"$TEST_ROOT/status\"; tmux wait-for -S \"$WAIT_KEY\""
 tmux wait-for "$WAIT_KEY"
 
 cat "$LOG"
+test "$(cat "$TEST_ROOT/status")" = 0

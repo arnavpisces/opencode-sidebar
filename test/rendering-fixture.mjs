@@ -39,13 +39,14 @@ const service = {
     idle = Boolean(control.idle)
     if (control.error) throw new Error(control.error)
     const directories = Array.from({ length: control.count ?? 1 }, (_, i) => `/tmp/render-project-${i}`)
+    const updatedAt = wallClock()
     return buildSnapshot({
       baseUrl: "http://127.0.0.1:42112",
       serverPort: 42112,
       projects: directories.map((directory, i) => ({ id: String(i), worktree: directory, sandboxes: [] })),
       sessions: directories.flatMap((directory, i) => Array.from({ length: control.sessions ?? 4 }, (_, j) => ({
         id: `render-${i}-${j}`, directory, title: `Session ${i}-${j} ${control.label ?? ""}`,
-        time: { created: 1, updated: wallClock() },
+        time: { created: 1, updated: updatedAt },
         status: { type: control.working ? "busy" : "idle" },
       }))),
       pinnedDirectories: [], panes: [], activeSessions: [],

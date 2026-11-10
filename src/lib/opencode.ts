@@ -1,4 +1,5 @@
 import net from "node:net"
+import { randomBytes } from "node:crypto"
 import { execFile, spawn } from "node:child_process"
 import fs from "node:fs/promises"
 import path from "node:path"
@@ -11,6 +12,7 @@ import {
   PRIVATE_FILE_MODE,
   SERVER_HOST,
   SERVER_LOG_FILE,
+  SERVER_PASSWORD_FILE,
   SESSION_PAGE_LIMIT,
   SNAPSHOT_DEBOUNCE_MS,
 } from "./constants.js"
@@ -19,6 +21,7 @@ import { SoundNotifier } from "./notifications.js"
 import { loadState, updateState } from "./state.js"
 import { getThemeScheme } from "./themes.js"
 import { createServerFetch, SERVER_HEALTH_TIMEOUT_MS } from "./server-fetch.js"
+import { createV2Client } from "./opencode-v2.js"
 import type { DirectoryRecord, OpenResult, ProjectRecord, SessionRecord, SessionRuntimeStatus, Snapshot } from "./types.js"
 import { assertDirectoryExists, directoryLabel, directorySubtitle, normalizeDirectory, sleep } from "./util.js"
 import {
@@ -40,11 +43,30 @@ import {
 
 const execFileAsync = promisify(execFile)
 
+async function getV2Password() {
+  await fs.mkdir(path.dirname(SERVER_PASSWORD_FILE), { recursive: true, mode: PRIVATE_DIRECTORY_MODE })
+  await fs.chmod(path.dirname(SERVER_PASSWORD_FILE), PRIVATE_DIRECTORY_MODE)
+  const temporary = `${SERVER_PASSWORD_FILE}.${process.pid}.${randomBytes(8).toString("hex")}`
+  try {
+    await fs.writeFile(temporary, randomBytes(32).toString("base64url"), { mode: PRIVATE_FILE_MODE, flag: "wx" })
+    await fs.link(temporary, SERVER_PASSWORD_FILE).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error
+    })
+  } finally {
+    await fs.unlink(temporary).catch(() => {})
+  }
+  await fs.chmod(SERVER_PASSWORD_FILE, PRIVATE_FILE_MODE)
+  const password = (await fs.readFile(SERVER_PASSWORD_FILE, "utf8")).trim()
+  if (!password) throw new Error("OpenCode 2 server password is empty")
+  return password
+}
+
 type OpencodeClient = ReturnType<typeof createOpencodeClient>
 type ReadyState = {
   client: OpencodeClient
   baseUrl: string
   port: number
+  generation?: 1 | 2
 }
 
 type DirectoryAutocompleteOption = {
@@ -59,14 +81,15 @@ type ServerPortState = {
   serverPID?: number
 }
 
-async function isHealthy(port: number) {
+async function isHealthy(port: number, generation: 1 | 2 = 1, password?: string) {
   try {
-    const response = await fetch(`http://${SERVER_HOST}:${port}/global/health`, {
+    const response = await fetch(`http://${SERVER_HOST}:${port}${generation === 2 ? "/api/project" : "/global/health"}`, {
       signal: AbortSignal.timeout(SERVER_HEALTH_TIMEOUT_MS),
+      headers: generation === 2 ? { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` } : undefined,
     })
     if (!response.ok) return false
-    const json = (await response.json()) as { healthy?: boolean }
-    return json.healthy === true
+    const json = (await response.json()) as { healthy?: boolean } | unknown[]
+    return generation === 2 ? Array.isArray(json) : !Array.isArray(json) && json.healthy === true
   } catch {
     return false
   }
@@ -90,7 +113,7 @@ async function nextFreePort(start: number) {
   throw new Error("Could not find a free local port for opencode serve")
 }
 
-async function startDetachedServer(port: number) {
+async function startDetachedServer(port: number, generation: 1 | 2, password?: string) {
   await fs.mkdir(path.dirname(SERVER_LOG_FILE), { recursive: true, mode: PRIVATE_DIRECTORY_MODE })
   await fs.chmod(path.dirname(SERVER_LOG_FILE), PRIVATE_DIRECTORY_MODE).catch(() => {})
   const handle = await fs.open(SERVER_LOG_FILE, "a", PRIVATE_FILE_MODE)
@@ -101,6 +124,7 @@ async function startDetachedServer(port: number) {
     {
       detached: true,
       stdio: ["ignore", handle.fd, handle.fd],
+      env: generation === 2 ? { ...process.env, OPENCODE_PASSWORD: password, OPENCODE_SERVER_PASSWORD: password } : process.env,
     },
   )
   child.unref()
@@ -153,11 +177,11 @@ async function stopDetachedServer(pid: number, port: number) {
   return true
 }
 
-async function ensureServerPort(): Promise<ServerPortState> {
+async function ensureServerPort(generation: 1 | 2, password?: string): Promise<ServerPortState> {
   const state = await loadState()
   let port = state.serverPort || DEFAULT_PORT
 
-  if (await isHealthy(port)) return { port }
+  if (await isHealthy(port, generation, password)) return { port }
 
   if (!(await isPortAvailable(port))) {
     port = await nextFreePort(Math.max(DEFAULT_PORT, port + 1))
@@ -167,34 +191,35 @@ async function ensureServerPort(): Promise<ServerPortState> {
     await updateState((current) => ({ ...current, serverPort: port }))
   }
 
-  const serverPID = await startDetachedServer(port)
+  const serverPID = await startDetachedServer(port, generation, password)
 
   const started = Date.now()
   while (Date.now() - started < 20_000) {
-    if (await isHealthy(port)) return { port, serverPID }
+    if (await isHealthy(port, generation, password)) return { port, serverPID }
     await sleep(250)
   }
 
+  if (serverPID) await stopDetachedServer(serverPID, port).catch(() => {})
   throw new Error(`Timed out waiting for opencode serve on port ${port}`)
 }
 
-async function fetchAllSessions(client: OpencodeClient) {
+async function fetchAllSessions(client: OpencodeClient, generation: 1 | 2 = 1) {
   const sessions: SessionRecord[] = []
-  let cursor: number | undefined
+  let cursor: number | string | undefined
 
   while (sessions.length < MAX_TOTAL_SESSIONS) {
     const result = await client.experimental.session.list({
       roots: true,
       limit: SESSION_PAGE_LIMIT,
       archived: false,
-      cursor,
+      cursor: cursor as number | undefined,
     })
     const chunk = (result.data ?? []) as SessionRecord[]
     sessions.push(...chunk)
-    const next = result.response.headers.get("x-next-cursor")
+    const next = generation === 2 ? (result as unknown as { nextCursor?: string }).nextCursor : result.response.headers.get("x-next-cursor")
     if (!next) break
-    cursor = Number(next)
-    if (!Number.isFinite(cursor)) break
+    cursor = generation === 2 ? next : Number(next)
+    if (typeof cursor === "number" && !Number.isFinite(cursor)) break
   }
 
   return sessions
@@ -311,7 +336,11 @@ export class LauncherService {
   private baseUrl?: string
   private port?: number
   private startedServerPID?: number
+  private generation: 1 | 2 = 1
+  private password?: string
   private readyPromise?: Promise<ReadyState>
+  private shuttingDown = false
+  private shutdownPromise?: Promise<boolean[]>
   private snapshotPromise?: Promise<Snapshot>
   private lastSnapshot?: Snapshot
   private lastSnapshotTime = 0
@@ -322,14 +351,21 @@ export class LauncherService {
   private static readonly MIN_REFRESH_MS = 2000
 
   async ensureReady(): Promise<ReadyState> {
-    if (this.client && this.baseUrl && this.port && (await isHealthy(this.port))) {
-      return {
-        client: this.client,
-        baseUrl: this.baseUrl,
-        port: this.port,
+    if (this.shuttingDown) throw new Error("OpenCode sidebar is shutting down")
+    if (this.client && this.baseUrl && this.port) {
+      const healthy = await isHealthy(this.port, this.generation, this.password)
+      if (this.shuttingDown) throw new Error("OpenCode sidebar is shutting down")
+      if (healthy) {
+        return {
+          client: this.client,
+          baseUrl: this.baseUrl,
+          port: this.port,
+          generation: this.generation,
+        }
       }
     }
 
+    if (this.shuttingDown) throw new Error("OpenCode sidebar is shutting down")
     if (this.readyPromise) {
       return this.readyPromise
     }
@@ -343,13 +379,22 @@ export class LauncherService {
       this.baseUrl = undefined
       this.port = undefined
 
-      const { port, serverPID } = await ensureServerPort()
+      const { stdout } = await execFileAsync("opencode", ["--version"])
+      const match = stdout.match(/(?:^|\s)v?(\d+)\./)
+      if (!match || ![1, 2].includes(Number(match[1]))) throw new Error(`Unsupported OpenCode version: ${stdout.trim()}`)
+      const generation = Number(match[1]) as 1 | 2
+      const password = generation === 2 ? await getV2Password() : undefined
+      const { port, serverPID } = await ensureServerPort(generation, password)
       const baseUrl = `http://${SERVER_HOST}:${port}`
-      const client = createOpencodeClient({ baseUrl, fetch: createServerFetch(), throwOnError: true })
+      const client = generation === 2
+        ? createV2Client(baseUrl, password!) as unknown as OpencodeClient
+        : createOpencodeClient({ baseUrl, fetch: createServerFetch(), throwOnError: true })
 
       this.client = client
       this.baseUrl = baseUrl
       this.port = port
+      this.generation = generation
+      this.password = password
       if (serverPID) {
         this.startedServerPID = serverPID
       }
@@ -358,6 +403,7 @@ export class LauncherService {
         client,
         baseUrl,
         port,
+        generation,
       }
     })()
 
@@ -407,11 +453,15 @@ export class LauncherService {
       ])
       const [projects, sessions, statuses, questions, permissions] = await Promise.all([
         fetchProjects(client),
-        fetchAllSessions(client),
+        fetchAllSessions(client, this.generation),
         fetchSessionStatuses(client),
-        fetchPendingQuestions(client),
-        fetchPendingPermissions(client),
+        this.generation === 1 ? fetchPendingQuestions(client) : Promise.resolve([]),
+        this.generation === 1 ? fetchPendingPermissions(client) : Promise.resolve([]),
       ])
+
+      const pending = this.generation === 2
+        ? await (client as unknown as ReturnType<typeof createV2Client>).pending([...new Set(sessions.map((session) => session.directory))])
+        : { questions, permissions }
 
       let snapshot = buildSnapshot({
         baseUrl,
@@ -432,8 +482,8 @@ export class LauncherService {
       }
       this.notifier.syncSnapshot(snapshot)
       this.notifier.syncPendingRequests({
-        questions,
-        permissions,
+        questions: pending.questions,
+        permissions: pending.permissions,
       })
 
       const fingerprint = JSON.stringify([snapshot.directories, snapshot.activeSessions, snapshot.previewSessionID, snapshot.baseUrl])
@@ -559,6 +609,7 @@ export class LauncherService {
       directory,
       title: session.title,
       baseUrl,
+      generation: this.generation,
       background: getThemeScheme(state.themeID).base.background,
     })
     this.invalidateSnapshot()
@@ -578,6 +629,7 @@ export class LauncherService {
       directory,
       title: session.title,
       baseUrl,
+      generation: this.generation,
       background: getThemeScheme(state.themeID).base.background,
     })
     this.invalidateSnapshot()
@@ -626,7 +678,7 @@ export class LauncherService {
     const { baseUrl } = await this.ensureReady()
     const preview = await getPreviewSessionMeta()
     if (!preview?.sessionID || !preview.paneID) return false
-    await restartSession(preview.paneID, preview.directory, preview.sessionID, baseUrl)
+    await restartSession(preview.paneID, preview.directory, preview.sessionID, baseUrl, this.generation)
     return true
   }
 
@@ -643,6 +695,18 @@ export class LauncherService {
   }
 
   async shutdown() {
+    if (this.shutdownPromise) return this.shutdownPromise
+    // Stop event-stream reconnects and timer-driven refreshes from starting a
+    // replacement server while shutdown is closing the current one.
+    this.shuttingDown = true
+    this.shutdownPromise = this.finishShutdown()
+    return this.shutdownPromise
+  }
+
+  private async finishShutdown() {
+    // If startup was already in progress, wait until ownership is recorded so
+    // that the newly started server can be stopped by this shutdown.
+    await this.readyPromise?.catch(() => {})
     await clearSidebarLayout().catch(() => {})
     const [ownedSessions, activeSessionsBeforeShutdown] = await Promise.all([
       listOwnedSessions().catch(() => []),

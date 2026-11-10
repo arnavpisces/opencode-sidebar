@@ -5,6 +5,7 @@ import path from "node:path"
 import { promisify } from "node:util"
 import { LauncherService } from "../src/lib/opencode.js"
 import type { SessionRecord } from "../src/lib/types.js"
+import { sessionCommand } from "../src/lib/terminal.js"
 import { cleanupTestSessions, createTestWorkspace, getTestRoot, sleep } from "./test-support.js"
 
 const execFileAsync = promisify(execFile)
@@ -109,15 +110,18 @@ async function main() {
     }
     createdSessions.push({ directory: workspace, sessionID: third.id })
 
+    const ready = await service.ensureReady()
     externalPaneID = await tmux([
       "new-window",
       "-d",
       "-t",
       tmuxSession,
+      "-c",
+      workspace,
       "-P",
       "-F",
       "#{pane_id}",
-      `cd \"${workspace}\" && opencode attach http://127.0.0.1:${(await service.ensureReady()).port} --dir \"${workspace}\" --session ${third.id}`,
+      ...sessionCommand(workspace, third.id, ready.baseUrl, ready.generation),
     ])
     await waitForPaneToExist(externalPaneID)
 

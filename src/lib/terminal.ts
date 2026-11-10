@@ -27,12 +27,14 @@ import {
   swapPreviewWithSessionPane,
 } from "./tmux.js"
 import { sessionWindowTitle } from "./util.js"
+import { SERVER_PASSWORD_FILE } from "./constants.js"
 
 type OpenInput = {
   sessionID: string
   directory: string
   title: string
   baseUrl: string
+  generation?: 1 | 2
   background?: string
 }
 
@@ -152,15 +154,7 @@ export async function openSessionWithPreferredTerminal(input: OpenInput): Promis
     await setPaneBackground(rightPaneID, input.background)
   }
 
-  await respawnPane(rightPaneID, input.directory, [
-    "opencode",
-    "attach",
-    input.baseUrl,
-    "--dir",
-    input.directory,
-    "--session",
-    input.sessionID,
-  ])
+  await respawnPane(rightPaneID, input.directory, sessionCommand(input.directory, input.sessionID, input.baseUrl, input.generation))
   await setPaneSession({
     paneID: rightPaneID,
     sessionID: input.sessionID,
@@ -186,14 +180,14 @@ export async function openSessionWithPreferredTerminal(input: OpenInput): Promis
   }
 }
 
-export async function restartSession(paneID: string, cwd: string, sessionID: string, baseUrl: string) {
-  await respawnPane(paneID, cwd, [
-    "opencode",
-    "attach",
-    baseUrl,
-    "--dir",
-    cwd,
-    "--session",
-    sessionID,
-  ])
+export function sessionCommand(cwd: string, sessionID: string, baseUrl: string, generation: 1 | 2 = 1) {
+  if (generation === 2) {
+    // Read the password in the child so it is not included in tmux's command arguments.
+    return ["sh", "-c", 'export OPENCODE_PASSWORD="$(cat "$1")"; shift; exec opencode "$@"', "opencode-sidebar", SERVER_PASSWORD_FILE, "--server", baseUrl, "--session", sessionID, cwd]
+  }
+  return ["opencode", "attach", baseUrl, "--dir", cwd, "--session", sessionID]
+}
+
+export async function restartSession(paneID: string, cwd: string, sessionID: string, baseUrl: string, generation: 1 | 2 = 1) {
+  await respawnPane(paneID, cwd, sessionCommand(cwd, sessionID, baseUrl, generation))
 }

@@ -47,6 +47,33 @@ test("shutdown preserves shared server when another pane uses the same session",
   expect(internals.port).toBe(42112)
 })
 
+test("shutdown prevents later readiness checks from starting a replacement server", async () => {
+  spyOn(terminal, "clearSidebarLayout").mockResolvedValue(undefined)
+  spyOn(terminal, "listOwnedSessions").mockResolvedValue([])
+  spyOn(terminal, "listAllActiveSessions").mockResolvedValue([])
+  const service = new LauncherService()
+  await service.shutdown()
+  await expect(service.ensureReady()).rejects.toThrow("shutting down")
+})
+
+test("shutdown waits for an already-started readiness attempt", async () => {
+  spyOn(terminal, "clearSidebarLayout").mockResolvedValue(undefined)
+  spyOn(terminal, "listOwnedSessions").mockResolvedValue([])
+  spyOn(terminal, "listAllActiveSessions").mockResolvedValue([])
+  const service = new LauncherService()
+  let release!: () => void
+  const readiness = new Promise<void>((resolve) => { release = resolve })
+  ;(service as unknown as { readyPromise: Promise<void> }).readyPromise = readiness
+  let finished = false
+  const shutdown = service.shutdown().then(() => { finished = true })
+  await Promise.resolve()
+  expect(finished).toBe(false)
+  await expect(service.ensureReady()).rejects.toThrow("shutting down")
+  release()
+  await shutdown
+  expect(finished).toBe(true)
+})
+
 test("a directory mutation during a refresh retries the captured stale state", async () => {
   let persisted = { serverPort: 42112, pinnedDirectories: [] as string[], hiddenDirectories: [] as string[], themeID: "rose-noir" }
   spyOn(terminal, "listActiveSessions").mockResolvedValue([])

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import type { Event as OpenCodeEvent, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2"
+import type { Event as OpenCodeEvent } from "@opencode-ai/sdk/v2"
 import type { Snapshot } from "./types.js"
 
 type SessionMeta = {
@@ -10,6 +10,8 @@ type SessionMeta = {
   directory: string
   updated: number
 }
+
+type PendingRequest = { id: string; sessionID: string }
 
 export type NotificationEffect = {
   id: string
@@ -144,7 +146,7 @@ export class NotificationTracker {
     }
   }
 
-  syncPendingRequests(input: { questions: QuestionRequest[]; permissions: PermissionRequest[] }) {
+  syncPendingRequests(input: { questions: PendingRequest[]; permissions: PendingRequest[] }) {
     const effects: NotificationEffect[] = []
     const nextQuestionRequestIDs = new Set<string>()
     const nextPermissionRequestIDs = new Set<string>()
@@ -306,7 +308,7 @@ export class SoundNotifier {
     }
   }
 
-  syncPendingRequests(input: { questions: QuestionRequest[]; permissions: PermissionRequest[] }) {
+  syncPendingRequests(input: { questions: PendingRequest[]; permissions: PendingRequest[] }) {
     for (const effect of this.tracker.syncPendingRequests(input)) {
       this.dispatch(effect)
     }

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/opencode-sidebar-model.XXXXXX")"
+SESSION_NAME="opencode-sidebar-model-test-$$"
+WAIT_KEY="opencode-sidebar-model-done-$$"
+cleanup() {
+  tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+  rm -rf "$TEST_ROOT"
+}
+trap cleanup EXIT
+LOG="$TEST_ROOT/output.log"
+tmux new-session -d -s "$SESSION_NAME" "cd \"$ROOT\" && OPENCODE_SIDEBAR_BACKEND=tmux OPENCODE_SIDEBAR_DIR=\"$TEST_ROOT/sidebar-state\" OPENCODE_SIDEBAR_TEST_ROOT=\"$TEST_ROOT\" bun run \"$ROOT/test/tmux-model-flow.ts\" >\"$LOG\" 2>&1; printf '%s' \$? >\"$TEST_ROOT/status\"; tmux wait-for -S \"$WAIT_KEY\""
+tmux wait-for "$WAIT_KEY"
+cat "$LOG"
+test "$(cat "$TEST_ROOT/status")" = 0
